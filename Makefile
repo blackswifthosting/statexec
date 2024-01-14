@@ -53,27 +53,27 @@ git-push:
 	git push && git push --tags
 
 build: 
-	@rm $(OUTPUT_DIR)/$(APP_NAME)
+	@$(shell [ -e $(OUTPUT_DIR)/$(APP_NAME) ] && rm $(OUTPUT_DIR)/$(APP_NAME))
 	@$(BUILD_CMD) -o $(OUTPUT_DIR)/$(APP_NAME)
 
 all: linux darwin
 linux: linux_amd64 linux_arm64
 
 linux_amd64:
-	@rm $(OUTPUT_DIR)/$(APP_NAME)-linux-amd64
+	@$(shell [ -e $(OUTPUT_DIR)/$(APP_NAME) ] && rm $(OUTPUT_DIR)/$(APP_NAME)-linux-amd64)
 	@GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(BUILD_CMD) -o $(OUTPUT_DIR)/$(APP_NAME)-linux-amd64
 
 linux_arm64:
-	@rm $(OUTPUT_DIR)/$(APP_NAME)-linux-arm64
+	@$(shell [ -e $(OUTPUT_DIR)/$(APP_NAME) ] && rm $(OUTPUT_DIR)/$(APP_NAME)-linux-arm64)
 	@GOOS=linux GOARCH=arm64 CGO_ENABLED=0 $(BUILD_CMD) -o $(OUTPUT_DIR)/$(APP_NAME)-linux-arm64
 
 darwin: darwin_amd64 darwin_arm64
 
 darwin_amd64:
-	@rm $(OUTPUT_DIR)/$(APP_NAME)-darwin-amd64
+	@$(shell [ -e $(OUTPUT_DIR)/$(APP_NAME) ] && rm $(OUTPUT_DIR)/$(APP_NAME)-darwin-amd64)
 	@GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 $(BUILD_CMD) -o $(OUTPUT_DIR)/$(APP_NAME)-darwin-amd64
 
 darwin_arm64:
-	@rm $(OUTPUT_DIR)/$(APP_NAME)-darwin-arm64
+	@$(shell [ -e $(OUTPUT_DIR)/$(APP_NAME) ] && rm $(OUTPUT_DIR)/$(APP_NAME)-darwin-arm64)
 	@GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 $(BUILD_CMD) -o $(OUTPUT_DIR)/$(APP_NAME)-darwin-arm64
 
