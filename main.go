@@ -14,10 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shirou/gopsutil/v3/cpu"
-	"github.com/shirou/gopsutil/v3/disk"
-	"github.com/shirou/gopsutil/v3/mem"
-	"github.com/shirou/gopsutil/v3/net"
+	"github.com/blackswifthosting/statexec/collectors"
 )
 
 var (
@@ -90,6 +87,114 @@ func main() {
 		usage()
 		os.Exit(1)
 	}
+}
+
+func usage() {
+	fmt.Println("Usage: " + os.Args[0] + " <mode> <command>")
+	fmt.Println("Version:", version)
+	fmt.Println("Description: Start a command and gather metrics about the system while the command is running")
+	fmt.Println("Modes:")
+	fmt.Println("  exec <command>")
+	fmt.Println("    Start the command")
+	fmt.Println("  waitStart <command>")
+	fmt.Println("    Start an HTTP server on port 8080 and wait for a /start request before starting the command")
+	fmt.Println("  waitStartAndStop <command>")
+	fmt.Println("    Start an HTTP server on port 8080 and wait for a /start request before starting the command, and a /stop request to stop the command")
+	fmt.Println("  syncStart <syncServerUrl> <command>")
+	fmt.Println("    Send a /start request to the sync server before starting the command")
+	fmt.Println("  syncStartAndStop <syncServerUrl> <command>")
+	fmt.Println("    Send a /start request to the sync server before starting the command, and a /stop request to stop the command")
+	fmt.Println("Environment variables:")
+	fmt.Println("  " + EnvVarPrefix + "METRICS_FILE: (string) path to the file where metrics will be written (default: /tmp/exomonitor_metrics.txt)")
+	fmt.Println("  " + EnvVarPrefix + "INSTANCE: (string) instance name (default is first argument of the command)")
+	fmt.Println("  " + EnvVarPrefix + "TIME_RELATIVE: (int64) timestamp in ms since epoch, used to generate metrics timestamps. Set to -1 to keep current time (default: -1)")
+	fmt.Println("  " + EnvVarPrefix + "WAIT_TIME_BEFORE_COMMAND: (int) time in seconds to wait before starting the command (default: 0)")
+	fmt.Println("  " + EnvVarPrefix + "WAIT_TIME_AFTER_COMMAND: (int) time in seconds to wait after the command has finished (default: 0)")
+	fmt.Println("  " + EnvVarPrefix + "LABEL_<key>: (string) extra label to add to all metrics (example: " + EnvVarPrefix + "LABEL_env=prod)")
+	fmt.Println("Examples:")
+	fmt.Println("  " + os.Args[0] + " exec ping -c 10 google.fr")
+	fmt.Println("  " + EnvVarPrefix + "LABEL_env=prod " + os.Args[0] + " ./mycommand")
+}
+
+func parseEnvVars() {
+
+	// Read metrics file from environment variable, or use default
+	metricsFile = os.Getenv(EnvVarPrefix + "METRICS_FILE")
+	if metricsFile == "" {
+		metricsFile = jobName + "_metrics.txt"
+	}
+
+	// Read instance from environment variable, or use default
+	instanceOverride = os.Getenv(EnvVarPrefix + "INSTANCE")
+
+	// Read time relative from environment variable, or use default
+	timeRelativeStr := os.Getenv(EnvVarPrefix + "TIME_RELATIVE")
+	if timeRelativeStr != "" {
+		var err error
+		timeRelative, err = strconv.ParseInt(timeRelativeStr, 10, 64)
+		if err != nil {
+			panic(fmt.Sprintln("Error parsing "+EnvVarPrefix+"TIME_RELATIVE env var, must be an int64 (timestamp in ms since epoch), found : ", timeRelativeStr))
+		}
+	}
+
+	// Read wait time before command from environment variable, or use default
+	waitTimeBeforeCommandStr := os.Getenv(EnvVarPrefix + "WAIT_TIME_BEFORE_COMMAND")
+	if waitTimeBeforeCommandStr != "" {
+		var err error
+		waitTimeBeforeCommand, err = strconv.ParseInt(waitTimeBeforeCommandStr, 10, 64)
+		if err != nil {
+			panic(fmt.Sprintln("Error parsing "+EnvVarPrefix+"WAIT_TIME_BEFORE_COMMAND env var, must be an int64 (time in ms), found : ", waitTimeBeforeCommandStr))
+		}
+	} else {
+		waitTimeBeforeCommand = 0
+	}
+
+	// Read wait time after command from environment variable, or use default
+	waitTimeAfterCommandStr := os.Getenv(EnvVarPrefix + "WAIT_TIME_AFTER_COMMAND")
+	if waitTimeAfterCommandStr != "" {
+		var err error
+		waitTimeAfterCommand, err = strconv.ParseInt(waitTimeAfterCommandStr, 10, 64)
+		if err != nil {
+			panic(fmt.Sprintln("Error parsing "+EnvVarPrefix+"WAIT_TIME_AFTER_COMMAND env var, must be an int64 (time in ms), found : ", waitTimeAfterCommandStr))
+		}
+	} else {
+		waitTimeAfterCommand = 0
+	}
+
+	// Get extra labels from environment variables
+	extraLabels = parseExtraLabelsFromEnv()
+}
+
+func parseExtraLabelsFromEnv() map[string]string {
+	// List of forbidden label names
+	forbiddenKeys := []string{"instance", "job", "cpu", "mode", "interface"}
+
+	extraLabels := make(map[string]string)
+	for _, env := range os.Environ() {
+
+		if strings.HasPrefix(env, EnvVarPrefix+"LABEL_") {
+
+			parts := strings.SplitN(env, "=", 2)
+			if len(parts) == 2 {
+				key := strings.TrimPrefix(parts[0], EnvVarPrefix+"LABEL_")
+				value := parts[1]
+
+				// Replace non-alphanumeric characters with underscores
+				safeKey := regexp.MustCompile(`[^a-zA-Z0-9]`).ReplaceAllString(key, "_")
+
+				// Check if key is not forbidden
+				for _, forbiddenKey := range forbiddenKeys {
+					if safeKey == forbiddenKey {
+						panic(fmt.Sprintln("Error parsing " + EnvVarPrefix + "LABEL_" + key + " env var, label " + safeKey + " is forbidden"))
+					}
+				}
+
+				// Add label
+				extraLabels[strings.ToLower(safeKey)] = value
+			}
+		}
+	}
+	return extraLabels
 }
 
 func syncStartCommand(cmd *exec.Cmd, syncServerUrl string, syncStop bool) {
@@ -185,114 +290,6 @@ func waitForHttpSyncToStartCommand(cmd *exec.Cmd, waitForStop bool) {
 	if err != nil && err != http.ErrServerClosed {
 		fmt.Println("Error starting the server:", err)
 	}
-}
-
-func usage() {
-	fmt.Println("Usage: " + os.Args[0] + " <mode> <command>")
-	fmt.Println("Version:", version)
-	fmt.Println("Description: Start a command and gather metrics about the system while the command is running")
-	fmt.Println("Modes:")
-	fmt.Println("  exec <command>")
-	fmt.Println("    Start the command")
-	fmt.Println("  waitStart <command>")
-	fmt.Println("    Start an HTTP server on port 8080 and wait for a /start request before starting the command")
-	fmt.Println("  waitStartAndStop <command>")
-	fmt.Println("    Start an HTTP server on port 8080 and wait for a /start request before starting the command, and a /stop request to stop the command")
-	fmt.Println("  syncStart <syncServerUrl> <command>")
-	fmt.Println("    Send a /start request to the sync server before starting the command")
-	fmt.Println("  syncStartAndStop <syncServerUrl> <command>")
-	fmt.Println("    Send a /start request to the sync server before starting the command, and a /stop request to stop the command")
-	fmt.Println("Environment variables:")
-	fmt.Println("  " + EnvVarPrefix + "METRICS_FILE: (string) path to the file where metrics will be written (default: /tmp/exomonitor_metrics.txt)")
-	fmt.Println("  " + EnvVarPrefix + "INSTANCE: (string) instance name (default is first argument of the command)")
-	fmt.Println("  " + EnvVarPrefix + "TIME_RELATIVE: (int64) timestamp in ms since epoch, used to generate metrics timestamps. Set to -1 to keep current time (default: -1)")
-	fmt.Println("  " + EnvVarPrefix + "WAIT_TIME_BEFORE_COMMAND: (int) time in seconds to wait before starting the command (default: 0)")
-	fmt.Println("  " + EnvVarPrefix + "WAIT_TIME_AFTER_COMMAND: (int) time in seconds to wait after the command has finished (default: 0)")
-	fmt.Println("  " + EnvVarPrefix + "LABEL_<key>: (string) extra label to add to all metrics (example: " + EnvVarPrefix + "LABEL_env=prod)")
-	fmt.Println("Examples:")
-	fmt.Println("  " + os.Args[0] + " exec ping -c 10 google.fr")
-	fmt.Println("  " + EnvVarPrefix + "LABEL_env=prod " + os.Args[0] + " ./mycommand")
-}
-
-func parseEnvVars() {
-
-	// Read metrics file from environment variable, or use default
-	metricsFile = os.Getenv(EnvVarPrefix + "METRICS_FILE")
-	if metricsFile == "" {
-		metricsFile = "/tmp/" + jobName + "_metrics.txt"
-	}
-
-	// Read instance from environment variable, or use default
-	instanceOverride = os.Getenv(EnvVarPrefix + "INSTANCE")
-
-	// Read time relative from environment variable, or use default
-	timeRelativeStr := os.Getenv(EnvVarPrefix + "TIME_RELATIVE")
-	if timeRelativeStr != "" {
-		var err error
-		timeRelative, err = strconv.ParseInt(timeRelativeStr, 10, 64)
-		if err != nil {
-			panic(fmt.Sprintln("Error parsing "+EnvVarPrefix+"TIME_RELATIVE env var, must be an int64 (timestamp in ms since epoch), found : ", timeRelativeStr))
-		}
-	}
-
-	// Read wait time before command from environment variable, or use default
-	waitTimeBeforeCommandStr := os.Getenv(EnvVarPrefix + "WAIT_TIME_BEFORE_COMMAND")
-	if waitTimeBeforeCommandStr != "" {
-		var err error
-		waitTimeBeforeCommand, err = strconv.ParseInt(waitTimeBeforeCommandStr, 10, 64)
-		if err != nil {
-			panic(fmt.Sprintln("Error parsing "+EnvVarPrefix+"WAIT_TIME_BEFORE_COMMAND env var, must be an int64 (time in ms), found : ", waitTimeBeforeCommandStr))
-		}
-	} else {
-		waitTimeBeforeCommand = 0
-	}
-
-	// Read wait time after command from environment variable, or use default
-	waitTimeAfterCommandStr := os.Getenv(EnvVarPrefix + "WAIT_TIME_AFTER_COMMAND")
-	if waitTimeAfterCommandStr != "" {
-		var err error
-		waitTimeAfterCommand, err = strconv.ParseInt(waitTimeAfterCommandStr, 10, 64)
-		if err != nil {
-			panic(fmt.Sprintln("Error parsing "+EnvVarPrefix+"WAIT_TIME_AFTER_COMMAND env var, must be an int64 (time in ms), found : ", waitTimeAfterCommandStr))
-		}
-	} else {
-		waitTimeAfterCommand = 0
-	}
-
-	// Get extra labels from environment variables
-	extraLabels = parseExtraLabelsFromEnv()
-}
-
-func parseExtraLabelsFromEnv() map[string]string {
-	// List of forbidden label names
-	forbiddenKeys := []string{"instance", "job", "cpu", "mode", "interface"}
-
-	extraLabels := make(map[string]string)
-	for _, env := range os.Environ() {
-
-		if strings.HasPrefix(env, EnvVarPrefix+"LABEL_") {
-
-			parts := strings.SplitN(env, "=", 2)
-			if len(parts) == 2 {
-				key := strings.TrimPrefix(parts[0], EnvVarPrefix+"LABEL_")
-				value := parts[1]
-
-				// Replace non-alphanumeric characters with underscores
-				safeKey := regexp.MustCompile(`[^a-zA-Z0-9]`).ReplaceAllString(key, "_")
-
-				// Check if key is not forbidden
-				for _, forbiddenKey := range forbiddenKeys {
-					if safeKey == forbiddenKey {
-						panic(fmt.Sprintln("Error parsing " + EnvVarPrefix + "LABEL_" + key + " env var, label " + safeKey + " is forbidden"))
-					}
-				}
-
-				// Add label
-				extraLabels[strings.ToLower(safeKey)] = value
-			}
-		}
-	}
-	return extraLabels
 }
 
 func startCommand(cmd *exec.Cmd) {
@@ -424,47 +421,11 @@ func generateLabelRender(metricsLabels map[string]string) string {
 	return strings.Join(labelRender, ",")
 }
 
-// Get CPU time by state
-func getCpuTimeByMode(cpuTimeStat *cpu.TimesStat, mode string) float64 {
-	switch mode {
-	case "user":
-		return cpuTimeStat.User
-	case "system":
-		return cpuTimeStat.System
-	case "idle":
-		return cpuTimeStat.Idle
-	case "nice":
-		return cpuTimeStat.Nice
-	case "iowait":
-		return cpuTimeStat.Iowait
-	case "irq":
-		return cpuTimeStat.Irq
-	case "softirq":
-		return cpuTimeStat.Softirq
-	case "steal":
-		return cpuTimeStat.Steal
-	case "guest":
-		return cpuTimeStat.Guest
-	case "guestNice":
-		return cpuTimeStat.GuestNice
-	default:
-		return 0
-	}
-}
-
-func appendToResultFile(data string, file *os.File) error {
-	// Write metrics to file
-	if _, err := file.WriteString(data); err != nil {
-		fmt.Println("Error writing to metrics file:", err)
-		return err
-	}
-	return nil
-}
-
 // Gather metrics
 func gatherMetrics(secondesSinceStart int, file *os.File) error {
 	timeBefore := time.Now()
 	metricsBuffer := ""
+	defaultLabels := generateLabelRender(nil)
 
 	var currentTimestamp int64
 	if timeRelative >= 0 {
@@ -472,116 +433,65 @@ func gatherMetrics(secondesSinceStart int, file *os.File) error {
 	} else {
 		currentTimestamp = timeAbsolute + int64(secondesSinceStart)*1000
 	}
-	// ================================================================
+
 	// Command status
-	// ================================================================
 
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"command_status{%s} %d %d\n", generateLabelRender(nil), commandState, currentTimestamp)
+	metricsBuffer += fmt.Sprintf(MetricPrefix+"command_status{%s} %d %d\n", defaultLabels, commandState, currentTimestamp)
 
-	// ================================================================
 	// CPU usage
-	// ================================================================
 
-	cpuTimeStat, err := cpu.Times(true)
-	if err != nil {
-		fmt.Println("Error retrieving CPU Times:", err)
-		return err
-	}
-
-	for _, cpuTime := range cpuTimeStat {
-		modes := []string{"user", "system", "idle", "nice", "iowait", "irq", "softirq", "steal", "guest", "guestNice"}
-		for _, mode := range modes {
+	cpuMetrics := collectors.CollectCpuMetrics()
+	for _, cpuMetric := range cpuMetrics {
+		for mode, cpuTime := range cpuMetric.CpuTimePerMode {
 			metricLabels := map[string]string{
-				"cpu":  cpuTime.CPU,
+				"cpu":  cpuMetric.Cpu,
 				"mode": mode,
 			}
-			metricsBuffer += fmt.Sprintf(MetricPrefix+"cpu_seconds_total{%s} %f %d\n", generateLabelRender(metricLabels), getCpuTimeByMode(&cpuTime, mode), currentTimestamp)
+			metricsBuffer += fmt.Sprintf(MetricPrefix+"cpu_seconds_total{%s} %f %d\n", generateLabelRender(metricLabels), cpuTime, currentTimestamp)
 		}
 	}
 
-	// ================================================================
 	// Memory usage
-	// ================================================================
 
-	vmStat, err := mem.VirtualMemory()
-	if err != nil {
-		fmt.Println("Error retrieving Virtual Memory Usage:", err)
-		return err
-	}
+	memoryMetrics := collectors.CollectMemoryMetrics()
+	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_total_bytes{%s} %d %d\n", defaultLabels, memoryMetrics.Total, currentTimestamp)
+	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_available_bytes{%s} %d %d\n", defaultLabels, memoryMetrics.Available, currentTimestamp)
+	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_used_bytes{%s} %d %d\n", defaultLabels, memoryMetrics.Used, currentTimestamp)
+	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_free_bytes{%s} %d %d\n", defaultLabels, memoryMetrics.Free, currentTimestamp)
+	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_buffers_bytes{%s} %d %d\n", defaultLabels, memoryMetrics.Buffers, currentTimestamp)
+	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_cached_bytes{%s} %d %d\n", defaultLabels, memoryMetrics.Cached, currentTimestamp)
+	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_used_percent{%s} %f %d\n", defaultLabels, memoryMetrics.UsedPercent, currentTimestamp)
 
-	// Generate metrics for memory RSS, working set bytes, swap, total, and max
-	//metricLabels := map[string]string{}
-	labels := generateLabelRender(nil)
-
-	// Total memory
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_total_bytes{%s} %d %d\n", labels, vmStat.Total, currentTimestamp)
-
-	// Memory available for use (calculated differently from free as it includes memory that can be quickly reclaimed).
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_available_bytes{%s} %d %d\n", labels, vmStat.Available, currentTimestamp)
-
-	// Memory used, excluding buffers and cache.
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_used_bytes{%s} %d %d\n", labels, vmStat.Used, currentTimestamp)
-
-	// Memory not being used at all (not including buffers and cache).
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_free_bytes{%s} %d %d\n", labels, vmStat.Free, currentTimestamp)
-
-	// Percentage of memory used
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_used_percent{%s} %f %d\n", labels, vmStat.UsedPercent, currentTimestamp)
-
-	// Buffers
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_buffers_bytes{%s} %d %d\n", labels, vmStat.Buffers, currentTimestamp)
-
-	// Cached
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_cached_bytes{%s} %d %d\n", labels, vmStat.Cached, currentTimestamp)
-
-	// ================================================================
 	// Network counters
-	// ================================================================
 
-	netCounters, err := net.IOCounters(true)
-	if err != nil {
-		fmt.Println("Error retrieving Net IO Counters:", err)
-		return err
-	}
-
-	for _, counter := range netCounters {
+	networkMetrics := collectors.CollectNetworkMetrics()
+	for _, networkMetric := range networkMetrics {
 		metricLabels := map[string]string{
-			"interface": counter.Name,
+			"interface": networkMetric.Interface,
 		}
-		metricsBuffer += fmt.Sprintf(MetricPrefix+"network_sent_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), counter.BytesSent, currentTimestamp)
-		metricsBuffer += fmt.Sprintf(MetricPrefix+"network_received_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), counter.BytesRecv, currentTimestamp)
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"network_sent_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), networkMetric.SentTotalBytes, currentTimestamp)
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"network_received_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), networkMetric.RecvTotalBytes, currentTimestamp)
 	}
 
-	// ================================================================
 	// Disk monitoring
-	// ================================================================
 
-	diskStats, err := disk.IOCounters()
-	if err != nil {
-		fmt.Println("Error retrieving Disk IO Counters:", err)
-		return err
-	}
-
-	for _, stats := range diskStats {
+	diskMetrics := collectors.CollectDiskMetrics()
+	for _, diskMetric := range diskMetrics {
 		metricLabels := map[string]string{
-			"disk": stats.Name,
+			"disk": diskMetric.Device,
 		}
-		metricsBuffer += fmt.Sprintf(MetricPrefix+"disk_read_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), stats.ReadBytes, currentTimestamp)
-		metricsBuffer += fmt.Sprintf(MetricPrefix+"disk_write_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), stats.WriteBytes, currentTimestamp)
+		renderedLabels := generateLabelRender(metricLabels)
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"disk_read_bytes_total{%s} %d %d\n", renderedLabels, diskMetric.ReadBytesTotal, currentTimestamp)
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"disk_write_bytes_total{%s} %d %d\n", renderedLabels, diskMetric.WriteBytesTotal, currentTimestamp)
 	}
 
-	// ================================================================
 	// Self monitoring
-	// ================================================================
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"metric_generation_time_total{%s} %d %d\n", generateLabelRender(nil), secondesSinceStart, currentTimestamp)
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"metric_generation_time_ms{%s} %d %d\n", generateLabelRender(nil), time.Since(timeBefore).Abs().Milliseconds(), currentTimestamp)
+	metricsBuffer += fmt.Sprintf(MetricPrefix+"seconds_since_start{%s} %d %d\n", defaultLabels, secondesSinceStart, currentTimestamp)
+	metricsBuffer += fmt.Sprintf(MetricPrefix+"metric_generation_duration_ms{%s} %d %d\n", defaultLabels, time.Since(timeBefore).Abs().Milliseconds(), currentTimestamp)
 
-	// ================================================================
 	// Write metrics to file
-	// ================================================================
-	err = appendToResultFile(metricsBuffer, file)
-	if err != nil {
-		fmt.Println("Error writing metrics to file:", err)
+	if _, err := file.WriteString(metricsBuffer); err != nil {
+		fmt.Println("Error writing to metrics file:", err)
 		return err
 	}
 
