@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,33 +14,38 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shirou/gopsutil/cpu"
-	"github.com/shirou/gopsutil/mem"
-	"github.com/shirou/gopsutil/net"
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v3/net"
 )
 
 var (
+	version               = "dev"
 	extraLabels           map[string]string
 	metricsFile           string
 	timeRelative          int64 = -1
+	timeAbsolute          int64
 	waitTimeBeforeCommand int64
 	waitTimeAfterCommand  int64
 	jobName               string = "statexec"
 	instanceOverride      string = ""
 	instance              string
 	role                  string
+	commandState          int = 0
 )
 
 const (
-	// Version of the program
-	Version      = "0.1.0"
-	EnvVarPrefix = "SE_"
-	MetricPrefix = "statexec_"
+	EnvVarPrefix         = "SE_"
+	MetricPrefix         = "statexec_"
+	CommandStatusPending = 0
+	CommandStatusRunning = 1
+	CommandStatusDone    = 2
 )
 
 func main() {
 	// Check if a command is provided
-	if len(os.Args) < 3 {
+	if len(os.Args) < 2 {
 		usage()
 		os.Exit(1)
 	}
@@ -80,7 +84,7 @@ func main() {
 		usage()
 		os.Exit(0)
 	case "version":
-		fmt.Println(Version)
+		fmt.Println(version)
 		os.Exit(0)
 	default:
 		usage()
@@ -185,7 +189,7 @@ func waitForHttpSyncToStartCommand(cmd *exec.Cmd, waitForStop bool) {
 
 func usage() {
 	fmt.Println("Usage: " + os.Args[0] + " <mode> <command>")
-	fmt.Println("Version:", Version)
+	fmt.Println("Version:", version)
 	fmt.Println("Description: Start a command and gather metrics about the system while the command is running")
 	fmt.Println("Modes:")
 	fmt.Println("  exec <command>")
@@ -293,6 +297,7 @@ func parseExtraLabelsFromEnv() map[string]string {
 
 func startCommand(cmd *exec.Cmd) {
 	var err error
+	var wg sync.WaitGroup
 
 	// Get instance name from environment variable, or use default (first argument of the command)
 	if instanceOverride != "" {
@@ -311,9 +316,14 @@ func startCommand(cmd *exec.Cmd) {
 
 	// Channel to signal when to stop gathering metrics
 	quit := make(chan struct{})
+	defer close(quit)
 
-	// Start gathering metrics in a goroutine
-	go startGathering(quit)
+	// Start gathering metrics in a goroutine we will wait for
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		startGathering(quit)
+	}()
 
 	// Wait before starting the command
 	if waitTimeBeforeCommand > 0 {
@@ -336,12 +346,15 @@ func startCommand(cmd *exec.Cmd) {
 	err = cmd.Start()
 	if err != nil {
 		fmt.Println("Error starting command:", err)
-		close(quit)
 		os.Exit(1)
 	}
 
+	commandState = CommandStatusRunning
+
 	// Wait for the command to finish
 	_ = cmd.Wait()
+
+	commandState = CommandStatusDone
 
 	// Wait after the command
 	if waitTimeAfterCommand > 0 {
@@ -350,22 +363,42 @@ func startCommand(cmd *exec.Cmd) {
 
 	// Signal to stop gathering metrics
 	quit <- struct{}{}
-	close(quit)
+
+	// Wait for the metrics goroutine to finish
+	wg.Wait()
 }
 
 // Start gathering metrics with a 1 second interval
 func startGathering(quit chan struct{}) {
+	// Delete metrics file if it exists
+	_ = os.Remove(metricsFile)
+
+	// Open metrics file in append mode
+	file, err := os.OpenFile(metricsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("Error opening metrics file:", err)
+		os.Exit(1)
+	}
+	defer file.Close()
+
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
-	startTime := time.Now()
-	gatherMetrics(startTime)
+
+	timeAbsolute = time.Now().Unix() * 1000
+	secondesSinceStart := 0
+	gatherMetrics(secondesSinceStart, file)
+
+	stopGatheringNextIteration := false
 	for {
 		select {
 		case <-ticker.C:
-			gatherMetrics(startTime)
+			secondesSinceStart++
+			gatherMetrics(secondesSinceStart, file)
+			if stopGatheringNextIteration {
+				return
+			}
 		case <-quit:
-			gatherMetrics(startTime)
-			return
+			stopGatheringNextIteration = true
 		}
 	}
 }
@@ -419,17 +452,31 @@ func getCpuTimeByMode(cpuTimeStat *cpu.TimesStat, mode string) float64 {
 	}
 }
 
+func appendToResultFile(data string, file *os.File) error {
+	// Write metrics to file
+	if _, err := file.WriteString(data); err != nil {
+		fmt.Println("Error writing to metrics file:", err)
+		return err
+	}
+	return nil
+}
+
 // Gather metrics
-func gatherMetrics(start time.Time) error {
-	var currentTimestamp int64
+func gatherMetrics(secondesSinceStart int, file *os.File) error {
 	timeBefore := time.Now()
 	metricsBuffer := ""
 
+	var currentTimestamp int64
 	if timeRelative >= 0 {
-		currentTimestamp = timeRelative + int64(math.Round(time.Since(start).Abs().Seconds()))*1000
+		currentTimestamp = timeRelative + int64(secondesSinceStart)*1000
 	} else {
-		currentTimestamp = time.Now().Unix() * 1000
+		currentTimestamp = timeAbsolute + int64(secondesSinceStart)*1000
 	}
+	// ================================================================
+	// Command status
+	// ================================================================
+
+	metricsBuffer += fmt.Sprintf(MetricPrefix+"command_status{%s} %d %d\n", generateLabelRender(nil), commandState, currentTimestamp)
 
 	// ================================================================
 	// CPU usage
@@ -506,25 +553,35 @@ func gatherMetrics(start time.Time) error {
 	}
 
 	// ================================================================
+	// Disk monitoring
+	// ================================================================
+
+	diskStats, err := disk.IOCounters()
+	if err != nil {
+		fmt.Println("Error retrieving Disk IO Counters:", err)
+		return err
+	}
+
+	for _, stats := range diskStats {
+		metricLabels := map[string]string{
+			"disk": stats.Name,
+		}
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"disk_read_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), stats.ReadBytes, currentTimestamp)
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"disk_write_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), stats.WriteBytes, currentTimestamp)
+	}
+
+	// ================================================================
 	// Self monitoring
 	// ================================================================
+	metricsBuffer += fmt.Sprintf(MetricPrefix+"metric_generation_time_total{%s} %d %d\n", generateLabelRender(nil), secondesSinceStart, currentTimestamp)
 	metricsBuffer += fmt.Sprintf(MetricPrefix+"metric_generation_time_ms{%s} %d %d\n", generateLabelRender(nil), time.Since(timeBefore).Abs().Milliseconds(), currentTimestamp)
 
 	// ================================================================
 	// Write metrics to file
 	// ================================================================
-
-	// Open metrics file in append mode
-	f, err := os.OpenFile(metricsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	err = appendToResultFile(metricsBuffer, file)
 	if err != nil {
-		fmt.Println("Error opening metrics file:", err)
-		return err
-	}
-	defer f.Close()
-
-	// Write metrics to file
-	if _, err := f.WriteString(metricsBuffer); err != nil {
-		fmt.Println("Error writing to metrics file:", err)
+		fmt.Println("Error writing metrics to file:", err)
 		return err
 	}
 
