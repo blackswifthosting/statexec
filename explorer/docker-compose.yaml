@@ -1,0 +1,47 @@
+version: '3'
+services:
+
+  #==================================
+  # Grafana
+  #==================================
+  grafana:
+    image: grafana/grafana
+
+    environment:
+    - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    - GF_AUTH_ANONYMOUS_ENABLED=true
+    - GF_AUTH_BASIC_ENABLED=false
+    #- GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+
+    ports:
+      - 3000:3000
+    
+    volumes:
+      - ./config/grafana-provision:/etc/grafana/provisioning # Grafana auto-provisioning datasource and dashboards
+      - ./config/grafana-dashboards:/var/lib/grafana/dashboards # Dashboards that will be imported on startup
+      
+    depends_on:
+      - vmsingle
+
+  #==================================
+  # VictoriaMetrics - VMSingle
+  #==================================
+  vmsingle:
+    image: victoriametrics/victoria-metrics
+
+    # See https://docs.victoriametrics.com/#list-of-command-line-flags
+    command: 
+    - -search.disableCache # Disable cache for search queries to be able to see new metrics immediately
+    - -retentionPeriod=10y # Be sure to be able to ingest data at 2024-01-01 for a long time
+    - -dedup.minScrapeInterval=1s # Be sure to be able to ingest data with 1s resolution
+
+    ports:
+      - 8428:8428
+
+    # We dont want persistence for now
+    volumes: []
+      #- vmdata:/victoria-metrics-data
+
+
+

@@ -1,0 +1,15 @@
+# Configuration file version
+apiVersion: 1
+
+deleteDatasources:
+  - name: VictoriaMetrics
+    orgId: 1
+
+datasources:
+  - name: VictoriaMetrics
+    type: prometheus
+    access: proxy
+    orgId: 1
+    url: http://vmsingle:8428
+    default: true
+    scrapeInterval: 1s
