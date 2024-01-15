@@ -131,6 +131,13 @@
                   "tooltip": false,
                   "viz": true
                 }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
               }
             ]
           }
@@ -168,7 +175,7 @@
             "uid": "${DS_VICTORIAMETRICS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(statexec_cpu_seconds_total[1s])) by (instance,role,mode)",
+          "expr": "sum(rate(statexec_cpu_seconds_total{instance=~\"$instance\"}[1s])) by (instance,role,mode)",
           "hide": false,
           "instant": false,
           "legendFormat": "{{instance}}/{{role}} {{mode}}",
@@ -181,7 +188,7 @@
             "uid": "${DS_VICTORIAMETRICS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(statexec_cpu_seconds_total[1s])) by (instance,role)",
+          "expr": "sum(rate(statexec_cpu_seconds_total{instance=~\"$instance\"}[1s])) by (instance,role)",
           "hide": false,
           "instant": false,
           "legendFormat": "{{instance}}/{{role}} total",
@@ -284,7 +291,7 @@
             "uid": "${DS_VICTORIAMETRICS}"
           },
           "editorMode": "code",
-          "expr": "statexec_memory_used_bytes",
+          "expr": "statexec_memory_used_bytes{instance=~\"$instance\"}",
           "hide": false,
           "instant": false,
           "legendFormat": "{{instance}}/{{role}} used",
@@ -297,7 +304,7 @@
             "uid": "${DS_VICTORIAMETRICS}"
           },
           "editorMode": "code",
-          "expr": "statexec_memory_buffers_bytes",
+          "expr": "statexec_memory_buffers_bytes{instance=~\"$instance\"}",
           "hide": false,
           "instant": false,
           "legendFormat": "{{instance}}/{{role}} buffers",
@@ -310,7 +317,7 @@
             "uid": "${DS_VICTORIAMETRICS}"
           },
           "editorMode": "code",
-          "expr": "statexec_memory_cached_bytes",
+          "expr": "statexec_memory_cached_bytes{instance=~\"$instance\"}",
           "hide": false,
           "instant": false,
           "legendFormat": "{{instance}}/{{role}} cached",
@@ -323,7 +330,7 @@
             "uid": "P4169E866C3094E38"
           },
           "editorMode": "code",
-          "expr": "statexec_memory_total_bytes",
+          "expr": "statexec_memory_total_bytes{instance=~\"$instance\"}",
           "hide": false,
           "instant": false,
           "legendFormat": "{{instance}}/{{role}} total",
@@ -439,7 +446,7 @@
             "uid": "${DS_VICTORIAMETRICS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(statexec_network_received_bytes_total[1s]) * 8) by (instance,role,interface)",
+          "expr": "sum(rate(statexec_network_received_bytes_total{instance=~\"$instance\"}[1s]) * 8) by (instance,role,interface)",
           "instant": false,
           "legendFormat": "[{{instance}}/{{role}}] {{interface}} in",
           "range": true,
@@ -451,7 +458,7 @@
             "uid": "${DS_VICTORIAMETRICS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(statexec_network_sent_bytes_total[1s]) * 8) by (instance,role,interface)",
+          "expr": "sum(rate(statexec_network_sent_bytes_total{instance=~\"$instance\"}[1s]) * 8) by (instance,role,interface)",
           "hide": false,
           "instant": false,
           "legendFormat": "[{{instance}}/{{role}}] {{interface}} out",
@@ -513,7 +520,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green"
+                "color": "green",
+                "value": null
               }
             ]
           },
@@ -566,7 +574,7 @@
             "uid": "${DS_VICTORIAMETRICS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(statexec_disk_read_bytes_total[1s]) * 8) by (instance,role,interface)\n",
+          "expr": "sum(rate(statexec_disk_read_bytes_total{instance=~\"$instance\"}[1s]) * 8) by (instance,role,interface)\n",
           "instant": false,
           "legendFormat": "[{{instance}}/{{role}}] {{interface}} read",
           "range": true,
@@ -578,7 +586,7 @@
             "uid": "${DS_VICTORIAMETRICS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(statexec_disk_write_bytes_total[1s]) * 8) by (instance,role,interface)",
+          "expr": "sum(rate(statexec_disk_write_bytes_total{instance=~\"$instance\"}[1s]) * 8) by (instance,role,interface)",
           "hide": false,
           "instant": false,
           "legendFormat": "[{{instance}}/{{role}}] {{interface}} write",
@@ -595,6 +603,34 @@
   "tags": [],
   "templating": {
     "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "definition": "label_values(statexec_command_status,instance)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Instance",
+        "multi": true,
+        "name": "instance",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(statexec_command_status,instance)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
       {
         "datasource": {
           "type": "prometheus",
