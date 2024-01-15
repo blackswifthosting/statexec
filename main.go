@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -18,18 +19,19 @@ import (
 )
 
 var (
-	version               = "dev"
-	extraLabels           map[string]string
-	metricsFile           string
-	timeRelative          int64 = -1
-	timeAbsolute          int64
-	waitTimeBeforeCommand int64
-	waitTimeAfterCommand  int64
-	jobName               string = "statexec"
-	instanceOverride      string = ""
-	instance              string
-	role                  string
-	commandState          int = 0
+	version                     = "dev"
+	extraLabels                 map[string]string
+	metricsFile                 string
+	metricsStartTime            int64
+	metricsStartTimeOverride    int64 = -1
+	secondesSinceGatheringStart int
+	waitTimeBeforeCommand       int64
+	waitTimeAfterCommand        int64
+	jobName                     string = "statexec"
+	instanceOverride            string = ""
+	instance                    string
+	role                        string
+	commandState                int = 0
 )
 
 const (
@@ -49,6 +51,9 @@ func main() {
 
 	// Parse environment variables
 	parseEnvVars()
+
+	// Delete metrics file if it exists
+	_ = os.Remove(metricsFile)
 
 	switch os.Args[1] {
 	case "waitStart":
@@ -116,12 +121,27 @@ func usage() {
 	fmt.Println("  " + EnvVarPrefix + "LABEL_env=prod " + os.Args[0] + " ./mycommand")
 }
 
+func appendToResultFile(text string) {
+	// Open metrics file in append mode
+	resultFile, err := os.OpenFile(metricsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("Error opening metrics file:", err)
+		os.Exit(1)
+	}
+	defer resultFile.Close()
+	if _, err := resultFile.WriteString(text); err != nil {
+		fmt.Println("Error writing to metrics file:", err)
+		os.Exit(1)
+	}
+
+}
+
 func parseEnvVars() {
 
 	// Read metrics file from environment variable, or use default
 	metricsFile = os.Getenv(EnvVarPrefix + "METRICS_FILE")
 	if metricsFile == "" {
-		metricsFile = jobName + "_metrics.txt"
+		metricsFile = jobName + "_metrics.prom"
 	}
 
 	// Read instance from environment variable, or use default
@@ -131,7 +151,7 @@ func parseEnvVars() {
 	timeRelativeStr := os.Getenv(EnvVarPrefix + "TIME_RELATIVE")
 	if timeRelativeStr != "" {
 		var err error
-		timeRelative, err = strconv.ParseInt(timeRelativeStr, 10, 64)
+		metricsStartTimeOverride, err = strconv.ParseInt(timeRelativeStr, 10, 64)
 		if err != nil {
 			panic(fmt.Sprintln("Error parsing "+EnvVarPrefix+"TIME_RELATIVE env var, must be an int64 (timestamp in ms since epoch), found : ", timeRelativeStr))
 		}
@@ -292,9 +312,33 @@ func waitForHttpSyncToStartCommand(cmd *exec.Cmd, waitForStop bool) {
 	}
 }
 
+type GrafanaAnnotation struct {
+	Time    int64    `json:"time"`
+	TimeEnd int64    `json:"timeEnd"`
+	Text    string   `json:"text"`
+	Tags    []string `json:"tags"`
+}
+
+func writeAnnotation(annotation GrafanaAnnotation) {
+	annotationBuffer, err := json.Marshal(annotation)
+	if err != nil {
+		fmt.Println("Error marshalling annotation:", err)
+		os.Exit(1)
+	}
+	appendToResultFile("#grafana-annotation " + string(annotationBuffer) + "\n")
+}
+
 func startCommand(cmd *exec.Cmd) {
 	var err error
 	var wg sync.WaitGroup
+
+	realStartTime := time.Now()
+
+	if metricsStartTimeOverride != -1 {
+		metricsStartTime = metricsStartTimeOverride
+	} else {
+		metricsStartTime = realStartTime.UnixMilli()
+	}
 
 	// Get instance name from environment variable, or use default (first argument of the command)
 	if instanceOverride != "" {
@@ -307,9 +351,6 @@ func startCommand(cmd *exec.Cmd) {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-
-	// Delete metrics file if it exists
-	//_ = os.Remove(metricsFile)
 
 	// Channel to signal when to stop gathering metrics
 	quit := make(chan struct{})
@@ -348,10 +389,40 @@ func startCommand(cmd *exec.Cmd) {
 
 	commandState = CommandStatusRunning
 
+	// Write annotation
+	annotationTime := metricsStartTime + time.Now().UnixMilli() - realStartTime.UnixMilli()
+	writeAnnotation(GrafanaAnnotation{
+		Time:    annotationTime,
+		TimeEnd: annotationTime,
+		Text:    "Command started",
+		Tags: []string{
+			"statexec",
+			"start",
+			"instance=" + instance,
+			"job=" + jobName,
+			"role=" + role,
+		},
+	})
+
 	// Wait for the command to finish
 	_ = cmd.Wait()
 
 	commandState = CommandStatusDone
+
+	// Write annotation
+	annotationTime = metricsStartTime + time.Now().UnixMilli() - realStartTime.UnixMilli()
+	writeAnnotation(GrafanaAnnotation{
+		Time:    annotationTime,
+		TimeEnd: annotationTime,
+		Text:    "Command done",
+		Tags: []string{
+			"statexec",
+			"done",
+			"instance=" + instance,
+			"job=" + jobName,
+			"role=" + role,
+		},
+	})
 
 	// Wait after the command
 	if waitTimeAfterCommand > 0 {
@@ -359,7 +430,7 @@ func startCommand(cmd *exec.Cmd) {
 	}
 
 	// Signal to stop gathering metrics
-	quit <- struct{}{}
+	stopGatheringMetrics(quit)
 
 	// Wait for the metrics goroutine to finish
 	wg.Wait()
@@ -367,30 +438,19 @@ func startCommand(cmd *exec.Cmd) {
 
 // Start gathering metrics with a 1 second interval
 func startGathering(quit chan struct{}) {
-	// Delete metrics file if it exists
-	_ = os.Remove(metricsFile)
-
-	// Open metrics file in append mode
-	file, err := os.OpenFile(metricsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Println("Error opening metrics file:", err)
-		os.Exit(1)
-	}
-	defer file.Close()
-
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	timeAbsolute = time.Now().Unix() * 1000
-	secondesSinceStart := 0
-	gatherMetrics(secondesSinceStart, file)
+	secondesSinceGatheringStart = 0
+
+	gatherMetrics(secondesSinceGatheringStart)
 
 	stopGatheringNextIteration := false
 	for {
 		select {
 		case <-ticker.C:
-			secondesSinceStart++
-			gatherMetrics(secondesSinceStart, file)
+			secondesSinceGatheringStart++
+			gatherMetrics(secondesSinceGatheringStart)
 			if stopGatheringNextIteration {
 				return
 			}
@@ -398,6 +458,10 @@ func startGathering(quit chan struct{}) {
 			stopGatheringNextIteration = true
 		}
 	}
+}
+
+func stopGatheringMetrics(quit chan struct{}) {
+	quit <- struct{}{}
 }
 
 // Generate a string to render labels in prometheus format
@@ -422,17 +486,11 @@ func generateLabelRender(metricsLabels map[string]string) string {
 }
 
 // Gather metrics
-func gatherMetrics(secondesSinceStart int, file *os.File) error {
-	timeBefore := time.Now()
+func gatherMetrics(secondesSinceStart int) error {
+	timeBeforeGathering := time.Now()
 	metricsBuffer := ""
 	defaultLabels := generateLabelRender(nil)
-
-	var currentTimestamp int64
-	if timeRelative >= 0 {
-		currentTimestamp = timeRelative + int64(secondesSinceStart)*1000
-	} else {
-		currentTimestamp = timeAbsolute + int64(secondesSinceStart)*1000
-	}
+	currentTimestamp := metricsStartTime + int64(secondesSinceGatheringStart)*1000
 
 	// Command status
 
@@ -487,13 +545,10 @@ func gatherMetrics(secondesSinceStart int, file *os.File) error {
 
 	// Self monitoring
 	metricsBuffer += fmt.Sprintf(MetricPrefix+"seconds_since_start{%s} %d %d\n", defaultLabels, secondesSinceStart, currentTimestamp)
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"metric_generation_duration_ms{%s} %d %d\n", defaultLabels, time.Since(timeBefore).Abs().Milliseconds(), currentTimestamp)
+	metricsBuffer += fmt.Sprintf(MetricPrefix+"metric_generation_duration_ms{%s} %d %d\n", defaultLabels, time.Since(timeBeforeGathering).Abs().Milliseconds(), currentTimestamp)
 
 	// Write metrics to file
-	if _, err := file.WriteString(metricsBuffer); err != nil {
-		fmt.Println("Error writing to metrics file:", err)
-		return err
-	}
+	appendToResultFile(metricsBuffer)
 
 	return nil
 }
