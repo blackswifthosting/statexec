@@ -559,7 +559,7 @@ func startCommand(cmd *exec.Cmd) {
 	}
 
 	// Signal to stop gathering metrics
-	stopGatheringMetrics(quit)
+	stopCollectingMetrics(quit)
 
 	// Wait for the metrics goroutine to finish
 	wg.Wait()
@@ -572,14 +572,14 @@ func startMetricCollectLoop(quit chan struct{}) {
 
 	secondesSinceGatheringStart := 0
 
-	collectMetrics(secondesSinceGatheringStart)
+	collectInstantMetrics(secondesSinceGatheringStart)
 
 	stopGatheringNextIteration := false
 	for {
 		select {
 		case <-ticker.C:
 			secondesSinceGatheringStart++
-			collectMetrics(secondesSinceGatheringStart)
+			collectInstantMetrics(secondesSinceGatheringStart)
 			if stopGatheringNextIteration {
 				writeResultToFile()
 				return
@@ -590,33 +590,33 @@ func startMetricCollectLoop(quit chan struct{}) {
 	}
 }
 
-func stopGatheringMetrics(quit chan struct{}) {
+func stopCollectingMetrics(quit chan struct{}) {
 	quit <- struct{}{}
 }
 
 // Generate a string to render labels in prometheus format
-func generateLabelRender(metricsLabels map[string]string) string {
-	var labelRender []string
+func renderLabels(metricsLabels map[string]string) string {
+	var result []string
 
 	// Static labels
-	labelRender = append(labelRender, fmt.Sprintf("instance=\"%s\"", instance))
-	labelRender = append(labelRender, fmt.Sprintf("job=\"%s\"", jobName))
-	labelRender = append(labelRender, fmt.Sprintf("role=\"%s\"", role))
+	result = append(result, fmt.Sprintf("instance=\"%s\"", instance))
+	result = append(result, fmt.Sprintf("job=\"%s\"", jobName))
+	result = append(result, fmt.Sprintf("role=\"%s\"", role))
 
 	// Metrics labels
 	for key, value := range metricsLabels {
-		labelRender = append(labelRender, fmt.Sprintf("%s=\"%s\"", key, value))
+		result = append(result, fmt.Sprintf("%s=\"%s\"", key, value))
 	}
 
 	// Extra labels
 	for key, value := range extraLabels {
-		labelRender = append(labelRender, fmt.Sprintf("%s=\"%s\"", key, value))
+		result = append(result, fmt.Sprintf("%s=\"%s\"", key, value))
 	}
-	return strings.Join(labelRender, ",")
+	return strings.Join(result, ",")
 }
 
 // Gather metrics
-func collectMetrics(secondesSinceStart int) {
+func collectInstantMetrics(secondesSinceStart int) {
 	timeBeforeGathering := time.Now()
 	currentTimestamp := metricsStartTime + int64(secondesSinceStart)*1000
 
@@ -630,6 +630,8 @@ func collectMetrics(secondesSinceStart int) {
 		timestamp:          currentTimestamp,
 	}
 	instantMetric.collectDuration = time.Since(timeBeforeGathering).Milliseconds()
+
+	// Add metric to store
 	metricStore = append(metricStore, instantMetric)
 }
 
@@ -642,7 +644,7 @@ func writeResultToFile() error {
 	}
 	defer resultFile.Close()
 
-	defaultLabels := generateLabelRender(nil)
+	defaultLabels := renderLabels(nil)
 
 	// ====== Write annotation to file ======
 	annotationsBuffer := ""
@@ -676,7 +678,7 @@ func writeResultToFile() error {
 					"cpu":  cpuMetric.Cpu,
 					"mode": mode,
 				}
-				metricsBuffer += fmt.Sprintf(MetricPrefix+"cpu_seconds_total{%s} %f %d\n", generateLabelRender(metricLabels), cpuTime, metric.timestamp)
+				metricsBuffer += fmt.Sprintf(MetricPrefix+"cpu_seconds_total{%s} %f %d\n", renderLabels(metricLabels), cpuTime, metric.timestamp)
 			}
 		}
 
@@ -694,8 +696,8 @@ func writeResultToFile() error {
 			metricLabels := map[string]string{
 				"interface": networkMetric.Interface,
 			}
-			metricsBuffer += fmt.Sprintf(MetricPrefix+"network_sent_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), networkMetric.SentTotalBytes, metric.timestamp)
-			metricsBuffer += fmt.Sprintf(MetricPrefix+"network_received_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), networkMetric.RecvTotalBytes, metric.timestamp)
+			metricsBuffer += fmt.Sprintf(MetricPrefix+"network_sent_bytes_total{%s} %d %d\n", renderLabels(metricLabels), networkMetric.SentTotalBytes, metric.timestamp)
+			metricsBuffer += fmt.Sprintf(MetricPrefix+"network_received_bytes_total{%s} %d %d\n", renderLabels(metricLabels), networkMetric.RecvTotalBytes, metric.timestamp)
 		}
 
 		// Disk monitoring
@@ -703,7 +705,7 @@ func writeResultToFile() error {
 			metricLabels := map[string]string{
 				"disk": diskMetric.Device,
 			}
-			renderedLabels := generateLabelRender(metricLabels)
+			renderedLabels := renderLabels(metricLabels)
 			metricsBuffer += fmt.Sprintf(MetricPrefix+"disk_read_bytes_total{%s} %d %d\n", renderedLabels, diskMetric.ReadBytesTotal, metric.timestamp)
 			metricsBuffer += fmt.Sprintf(MetricPrefix+"disk_write_bytes_total{%s} %d %d\n", renderedLabels, diskMetric.WriteBytesTotal, metric.timestamp)
 		}
