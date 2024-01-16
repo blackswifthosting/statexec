@@ -44,15 +44,16 @@ var (
 )
 
 const (
-	EnvVarPrefix         = "SE_"
-	MetricPrefix         = "statexec_"
-	CommandStatusPending = 0
-	CommandStatusRunning = 1
-	CommandStatusDone    = 2
+	EnvVarPrefix string = "SE_"
+	MetricPrefix string = "statexec_"
 
-	ModeStandalone = 0
-	ModeLeader     = 1
-	ModeFollower   = 2
+	CommandStatusPending int = 0
+	CommandStatusRunning int = 1
+	CommandStatusDone    int = 2
+
+	ModeStandalone int = 0
+	ModeLeader     int = 1
+	ModeFollower   int = 2
 )
 
 type GrafanaAnnotation struct {
@@ -63,14 +64,14 @@ type GrafanaAnnotation struct {
 }
 
 type InstantMetric struct {
-	cmdStatus          int
-	cpu                []collectors.CpuMetrics
-	memory             collectors.MemoryMetrics
-	network            []collectors.NetworkMetrics
-	disk               []collectors.DiskMetrics
-	secondesSinceStart int
-	collectDuration    int64
-	timestamp          int64
+	cmdStatus       int
+	cpu             []collectors.CpuMetrics
+	memory          collectors.MemoryMetrics
+	network         []collectors.NetworkMetrics
+	disk            []collectors.DiskMetrics
+	msSinceStart    int64
+	collectDuration int64
+	timestamp       int64
 }
 
 func main() {
@@ -93,7 +94,7 @@ func main() {
 
 	fmt.Printf("Metrics file: %s\n", metricsFile)
 	fmt.Printf("Instance: %s\n", instance)
-	fmt.Printf("Metrics start time: %d\n", metricsStartTime)
+	fmt.Printf("Metrics start time: %d\n", metricsStartTimeOverride)
 	fmt.Printf("Delay before command: %d\n", delayBeforeCommand)
 	fmt.Printf("Delay after command: %d\n", delayAfterCommand)
 	fmt.Printf("Role: %s\n", role)
@@ -122,19 +123,20 @@ func usage() {
 	fmt.Printf("Usage: %s [OPTIONS] <command> [command args]\n", binself)
 	fmt.Printf("Version: %s\n", version)
 	fmt.Println("")
-	fmt.Println("Common options:")
+	fmt.Printf("Common options:\n")
 	fmt.Printf("  --file, -f <file>                       %sFILE                 Metrics file (default: statexec_metrics.prom)\n", EnvVarPrefix)
 	fmt.Printf("  --instance, -i <instance>               %sINSTANCE             Instance name (default: <command>)\n", EnvVarPrefix)
 	fmt.Printf("  --metrics-start-time, -mst <timestamp>  %sMETRICS_START_TIME   Metrics start time in milliseconds (default: now)\n", EnvVarPrefix)
 	fmt.Printf("  --delay, -d <seconds>                   %sDELAY                Delay in seconds before and after the command (default: 0)\n", EnvVarPrefix)
 	fmt.Printf("  --delay-before-command, -dbc <seconds>  %sDELAY_BEFORE_COMMAND Delay in seconds  before the command (default: 0)\n", EnvVarPrefix)
 	fmt.Printf("  --delay-after-command, -dac <seconds>   %sDELAY_AFTER_COMMAND  Delay in seconds  after the command (default: 0)\n", EnvVarPrefix)
-	fmt.Printf("  --label, -l <key>=<value>               %sLABEL_<key>          Extra label to add to all metrics\n", EnvVarPrefix)
-	fmt.Println("Synchronization options:")
-	fmt.Printf("  --connect, -c <ip>                      %sCONNECT              Connect to server mode\n", EnvVarPrefix)
-	fmt.Printf("  --server, -s                            %sSERVER               Start server mode\n", EnvVarPrefix)
-	fmt.Printf("  --sync-port, -sp <port>                 %sSYNC_PORT            Sync port (default: 8080)\n", EnvVarPrefix)
-	fmt.Printf("  --sync-start-only, -sso                 %sSYNC_START_ONLY      Sync start only (default: false)\n", EnvVarPrefix)
+	fmt.Printf("  --label, -l <key>=<value>               %sLABEL_<key>          Extra label to add to all metrics (no default)\n", EnvVarPrefix)
+	fmt.Println("")
+	fmt.Printf("Synchronization options:\n")
+	fmt.Printf("  --server, -s               %s                   Start server mode (no default)\n", strings.Repeat(" ", len(EnvVarPrefix)))
+	fmt.Printf("  --connect, -c <ip>         %sCONNECT            Connect to server on <ip> (no default)\n", EnvVarPrefix)
+	fmt.Printf("  --sync-port, -sp <port>    %sSYNC_PORT          Sync port (default: 8080)\n", EnvVarPrefix)
+	fmt.Printf("  --sync-start-only, -sso    %sSYNC_START_ONLY    Sync start only (default: false)\n", EnvVarPrefix)
 	fmt.Println("Other options:")
 	fmt.Printf("  --version, -v        Print version and exit\n")
 	fmt.Printf("  --help, -help, -h    Print help and exit\n")
@@ -296,7 +298,10 @@ func parseEnvVars() {
 
 	// Sync start only (-sso, --sync-start-only)
 	if value := os.Getenv(EnvVarPrefix + "SYNC_START_ONLY"); value != "" {
-		syncWaitForStop = false
+		// If value of syncStartOnly is "true", set syncWaitForStop to false
+		if value == "true" {
+			syncWaitForStop = false
+		}
 	}
 
 	// Delay in seconds (-d, --delay)
@@ -570,16 +575,16 @@ func startMetricCollectLoop(quit chan struct{}) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	secondesSinceGatheringStart := 0
+	var msSinceStart int64 = 0
 
-	collectInstantMetrics(secondesSinceGatheringStart)
+	collectInstantMetrics(msSinceStart)
 
 	stopGatheringNextIteration := false
 	for {
 		select {
 		case <-ticker.C:
-			secondesSinceGatheringStart++
-			collectInstantMetrics(secondesSinceGatheringStart)
+			msSinceStart += 1000
+			collectInstantMetrics(msSinceStart)
 			if stopGatheringNextIteration {
 				writeResultToFile()
 				return
@@ -616,18 +621,18 @@ func renderLabels(metricsLabels map[string]string) string {
 }
 
 // Gather metrics
-func collectInstantMetrics(secondesSinceStart int) {
+func collectInstantMetrics(msSinceStart int64) {
 	timeBeforeGathering := time.Now()
-	currentTimestamp := metricsStartTime + int64(secondesSinceStart)*1000
+	currentTimestamp := metricsStartTime + msSinceStart
 
 	instantMetric := InstantMetric{
-		cmdStatus:          commandState,
-		cpu:                collectors.CollectCpuMetrics(),
-		memory:             collectors.CollectMemoryMetrics(),
-		network:            collectors.CollectNetworkMetrics(),
-		disk:               collectors.CollectDiskMetrics(),
-		secondesSinceStart: secondesSinceStart,
-		timestamp:          currentTimestamp,
+		cmdStatus:    commandState,
+		cpu:          collectors.CollectCpuMetrics(),
+		memory:       collectors.CollectMemoryMetrics(),
+		network:      collectors.CollectNetworkMetrics(),
+		disk:         collectors.CollectDiskMetrics(),
+		msSinceStart: msSinceStart,
+		timestamp:    currentTimestamp,
 	}
 	instantMetric.collectDuration = time.Since(timeBeforeGathering).Milliseconds()
 
@@ -636,6 +641,8 @@ func collectInstantMetrics(secondesSinceStart int) {
 }
 
 func writeResultToFile() error {
+	defaultLabels := renderLabels(nil)
+
 	// Open metrics file in append mode
 	resultFile, err := os.OpenFile(metricsFile, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -644,7 +651,51 @@ func writeResultToFile() error {
 	}
 	defer resultFile.Close()
 
-	defaultLabels := renderLabels(nil)
+	urlSuffix := ""
+	if version != "dev" {
+		urlSuffix = "tree/" + version
+	}
+	commentBlock := `
+# Collector: blackswift/statexec
+# Version: ` + version + `
+# Url: https://github.com/blackswifthosting/statexec/` + urlSuffix + `
+
+# HELP statexec_command_status Status of the command (0: pending, 1: running, 2: done)
+# TYPE statexec_command_status gauge
+# HELP statexec_cpu_seconds_total CPU time spent in seconds
+# TYPE statexec_cpu_seconds_total counter
+# HELP statexec_memory_total_bytes Total memory in bytes
+# TYPE statexec_memory_total_bytes gauge
+# HELP statexec_memory_available_bytes Available memory in bytes
+# TYPE statexec_memory_available_bytes gauge
+# HELP statexec_memory_used_bytes Used memory in bytes
+# TYPE statexec_memory_used_bytes gauge
+# HELP statexec_memory_free_bytes Free memory in bytes
+# TYPE statexec_memory_free_bytes gauge
+# HELP statexec_memory_buffers_bytes Memory buffers in bytes
+# TYPE statexec_memory_buffers_bytes gauge
+# HELP statexec_memory_cached_bytes Memory cached in bytes
+# TYPE statexec_memory_cached_bytes gauge
+# HELP statexec_memory_used_percent Used memory in percent
+# TYPE statexec_memory_used_percent gauge
+# HELP statexec_network_sent_bytes_total Total sent bytes
+# TYPE statexec_network_sent_bytes_total counter
+# HELP statexec_network_received_bytes_total Total received bytes
+# TYPE statexec_network_received_bytes_total counter
+# HELP statexec_disk_read_bytes_total Total read bytes
+# TYPE statexec_disk_read_bytes_total counter
+# HELP statexec_disk_write_bytes_total Total written bytes
+# TYPE statexec_disk_write_bytes_total counter
+# HELP statexec_time_since_start_ms Milliseconds since monitoring start
+# TYPE statexec_time_since_start_ms gauge
+# HELP statexec_metric_collect_duration_ms Duration of the metric collection in milliseconds
+# TYPE statexec_metric_collect_duration_ms gauge
+
+`
+	if _, err := resultFile.WriteString(commentBlock); err != nil {
+		fmt.Println("Error writing to metrics file:", err)
+		os.Exit(1)
+	}
 
 	// ====== Write annotation to file ======
 	annotationsBuffer := ""
@@ -711,7 +762,7 @@ func writeResultToFile() error {
 		}
 
 		// Self monitoring
-		metricsBuffer += fmt.Sprintf(MetricPrefix+"seconds_since_start{%s} %d %d\n", defaultLabels, metric.secondesSinceStart, metric.timestamp)
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"statexec_time_since_start_ms{%s} %d %d\n", defaultLabels, metric.msSinceStart, metric.timestamp)
 		metricsBuffer += fmt.Sprintf(MetricPrefix+"metric_collect_duration_ms{%s} %d %d\n", defaultLabels, metric.collectDuration, metric.timestamp)
 
 		// Write metrics to file
