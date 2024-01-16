@@ -37,11 +37,10 @@ explore:
 	./explorer/explorer.sh explore
 
 explorer-generate-samples:
-	
-	SE_TIME_RELATIVE=1704067200000 SE_METRICS_FILE=explorer/import/sleep.prom SE_WAIT_TIME_BEFORE_COMMAND=2 SE_WAIT_TIME_AFTER_COMMAND=2 go run main.go exec sleep 10
-	SE_TIME_RELATIVE=1704067260000 SE_METRICS_FILE=explorer/import/ping.prom SE_WAIT_TIME_BEFORE_COMMAND=2 SE_WAIT_TIME_AFTER_COMMAND=2 go run main.go exec ping 8.8.8.8 -c 20
-	SE_TIME_RELATIVE=1704067320000 SE_METRICS_FILE=explorer/import/wget.prom SE_WAIT_TIME_BEFORE_COMMAND=2 SE_WAIT_TIME_AFTER_COMMAND=2 go run main.go exec wget https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-standard-3.19.0-x86_64.iso
-	
+	go run main.go -f explorer/import/sleep.prom -mst 1704067200000 -d 2 -- sleep 10
+	go run main.go -f explorer/import/ping.prom -mst 1704067260000 -d 2 -- ping 8.8.8.8 -c 20
+	go run main.go -f explorer/import/wget.prom -mst 1704067320000 -d 2 -- wget https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-standard-3.19.0-x86_64.iso
+
 #===============================================================================
 # Git versioning helpers
 #===============================================================================

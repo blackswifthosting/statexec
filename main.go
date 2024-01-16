@@ -19,19 +19,25 @@ import (
 )
 
 var (
-	version                     = "dev"
-	extraLabels                 map[string]string
-	metricsFile                 string
-	metricsStartTime            int64
-	metricsStartTimeOverride    int64 = -1
-	secondesSinceGatheringStart int
-	waitTimeBeforeCommand       int64
-	waitTimeAfterCommand        int64
-	jobName                     string = "statexec"
-	instanceOverride            string = ""
-	instance                    string
-	role                        string
-	commandState                int = 0
+	version        = "dev"
+	jobName string = "statexec"
+
+	metricsFile              string = ""
+	metricsStartTimeOverride int64  = -1 // in milliseconds
+	delayBeforeCommand       int64  = 0
+	delayAfterCommand        int64  = 0
+	instanceOverride         string = ""
+
+	role            string = "standalone"
+	serverIp        string = ""
+	syncPort        string = "8080"
+	syncWaitForStop bool   = true
+
+	extraLabels map[string]string
+
+	metricsStartTime int64 // in milliseconds
+	instance         string
+	commandState     int = 0
 )
 
 const (
@@ -40,85 +46,91 @@ const (
 	CommandStatusPending = 0
 	CommandStatusRunning = 1
 	CommandStatusDone    = 2
+
+	ModeStandalone = 0
+	ModeLeader     = 1
+	ModeFollower   = 2
 )
 
 func main() {
-	// Check if a command is provided
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(1)
-	}
+	// Default values
+	metricsFile = jobName + "_metrics.prom"
+	extraLabels = make(map[string]string)
 
 	// Parse environment variables
 	parseEnvVars()
 
+	cmd := parseArgs()
+
+	if instanceOverride != "" {
+		instance = instanceOverride
+	} else {
+		instance = cmd[0]
+	}
+
 	// Delete metrics file if it exists
 	_ = os.Remove(metricsFile)
 
-	switch os.Args[1] {
-	case "waitStart":
-		role = "server"
-		// Start the HTTP server
-		waitForHttpSyncToStartCommand(exec.Command(os.Args[2], os.Args[3:]...), false)
-	case "waitStartAndStop":
-		role = "server"
-		// Start the HTTP server and wait for a /start request before starting the command
-		waitForHttpSyncToStartCommand(exec.Command(os.Args[2], os.Args[3:]...), true)
-	case "exec":
-		role = "standalone"
-		// Start the command
-		startCommand(exec.Command(os.Args[2], os.Args[3:]...))
-	case "syncStart":
-		role = "client"
-		syncServerUrl := os.Args[2]
-		syncStartCommand(exec.Command(os.Args[3], os.Args[4:]...), syncServerUrl, false)
-	case "syncStartAndStop":
-		role = "client"
-		syncServerUrl := os.Args[2]
-		syncStartCommand(exec.Command(os.Args[3], os.Args[4:]...), syncServerUrl, true)
-	case "help":
-		usage()
-		os.Exit(0)
-	case "--help":
-		usage()
-		os.Exit(0)
-	case "-h":
-		usage()
-		os.Exit(0)
-	case "version":
-		fmt.Println(version)
-		os.Exit(0)
-	default:
-		usage()
-		os.Exit(1)
+	fmt.Println("Command: " + strings.Join(cmd, " "))
+
+	fmt.Printf("Metrics file: %s\n", metricsFile)
+	fmt.Printf("Instance: %s\n", instance)
+	fmt.Printf("Metrics start time: %d\n", metricsStartTime)
+	fmt.Printf("Delay before command: %d\n", delayBeforeCommand)
+	fmt.Printf("Delay after command: %d\n", delayAfterCommand)
+	fmt.Printf("Role: %s\n", role)
+	fmt.Printf("Server IP: %s\n", serverIp)
+	fmt.Printf("Sync port: %s\n", syncPort)
+	fmt.Printf("Sync wait for stop: %v\n", syncWaitForStop)
+	fmt.Printf("Extra labels: %v\n", extraLabels)
+
+	execCmd := exec.Command(cmd[0], cmd[1:]...)
+
+	switch role {
+	case "standalone":
+		fmt.Println("Starting statexec in standalone mode")
+		startCommand(execCmd)
+	case "client":
+		fmt.Printf("Starting statexec as client of http://%s:%s (withstop : %v)", serverIp, syncPort, syncWaitForStop)
+		syncStartCommand(execCmd, fmt.Sprintf("http://%s:%s", serverIp, syncPort), syncWaitForStop)
+	case "server":
+		fmt.Printf("Starting statexec as server on port %s (withstop : %v)", syncPort, syncWaitForStop)
+		waitForHttpSyncToStartCommand(execCmd, syncWaitForStop)
 	}
 }
 
 func usage() {
-	fmt.Println("Usage: " + os.Args[0] + " <mode> <command>")
-	fmt.Println("Version:", version)
-	fmt.Println("Description: Start a command and gather metrics about the system while the command is running")
-	fmt.Println("Modes:")
-	fmt.Println("  exec <command>")
-	fmt.Println("    Start the command")
-	fmt.Println("  waitStart <command>")
-	fmt.Println("    Start an HTTP server on port 8080 and wait for a /start request before starting the command")
-	fmt.Println("  waitStartAndStop <command>")
-	fmt.Println("    Start an HTTP server on port 8080 and wait for a /start request before starting the command, and a /stop request to stop the command")
-	fmt.Println("  syncStart <syncServerUrl> <command>")
-	fmt.Println("    Send a /start request to the sync server before starting the command")
-	fmt.Println("  syncStartAndStop <syncServerUrl> <command>")
-	fmt.Println("    Send a /start request to the sync server before starting the command, and a /stop request to stop the command")
-	fmt.Println("Environment variables:")
-	fmt.Println("  " + EnvVarPrefix + "METRICS_FILE: (string) path to the file where metrics will be written (default: /tmp/exomonitor_metrics.txt)")
-	fmt.Println("  " + EnvVarPrefix + "INSTANCE: (string) instance name (default is first argument of the command)")
-	fmt.Println("  " + EnvVarPrefix + "TIME_RELATIVE: (int64) timestamp in ms since epoch, used to generate metrics timestamps. Set to -1 to keep current time (default: -1)")
-	fmt.Println("  " + EnvVarPrefix + "WAIT_TIME_BEFORE_COMMAND: (int) time in seconds to wait before starting the command (default: 0)")
-	fmt.Println("  " + EnvVarPrefix + "WAIT_TIME_AFTER_COMMAND: (int) time in seconds to wait after the command has finished (default: 0)")
-	fmt.Println("  " + EnvVarPrefix + "LABEL_<key>: (string) extra label to add to all metrics (example: " + EnvVarPrefix + "LABEL_env=prod)")
-	fmt.Println("Examples:")
-	fmt.Println("  " + os.Args[0] + " exec ping -c 10 google.fr")
-	fmt.Println("  " + EnvVarPrefix + "LABEL_env=prod " + os.Args[0] + " ./mycommand")
+	binself := os.Args[0]
+	fmt.Printf("Usage: %s [OPTIONS] <command> [command args]\n", binself)
+	fmt.Printf("Version: %s\n", version)
+	fmt.Println("")
+	fmt.Println("Common options:")
+	fmt.Printf("  --file, -f <file>                       %sFILE                 Metrics file (default: statexec_metrics.prom)\n", EnvVarPrefix)
+	fmt.Printf("  --instance, -i <instance>               %sINSTANCE             Instance name (default: <command>)\n", EnvVarPrefix)
+	fmt.Printf("  --metrics-start-time, -mst <timestamp>  %sMETRICS_START_TIME   Metrics start time in milliseconds (default: now)\n", EnvVarPrefix)
+	fmt.Printf("  --delay, -d <seconds>                   %sDELAY                Delay in seconds before and after the command (default: 0)\n", EnvVarPrefix)
+	fmt.Printf("  --delay-before-command, -dbc <seconds>  %sDELAY_BEFORE_COMMAND Delay in seconds  before the command (default: 0)\n", EnvVarPrefix)
+	fmt.Printf("  --delay-after-command, -dac <seconds>   %sDELAY_AFTER_COMMAND  Delay in seconds  after the command (default: 0)\n", EnvVarPrefix)
+	fmt.Printf("  --label, -l <key>=<value>               %sLABEL_<key>          Extra label to add to all metrics\n", EnvVarPrefix)
+	fmt.Println("Synchronization options:")
+	fmt.Printf("  --connect, -c <ip>                      %sCONNECT              Connect to server mode\n", EnvVarPrefix)
+	fmt.Printf("  --server, -s                            %sSERVER               Start server mode\n", EnvVarPrefix)
+	fmt.Printf("  --sync-port, -sp <port>                 %sSYNC_PORT            Sync port (default: 8080)\n", EnvVarPrefix)
+	fmt.Printf("  --sync-start-only, -sso                 %sSYNC_START_ONLY      Sync start only (default: false)\n", EnvVarPrefix)
+	fmt.Println("Other options:")
+	fmt.Printf("  --version, -v        Print version and exit\n")
+	fmt.Printf("  --help, -help, -h    Print help and exit\n")
+	fmt.Printf("  --                   Stop parsing arguments\n")
+	fmt.Println("")
+	fmt.Println("Standalone examples:")
+	fmt.Printf("  %s ping 8.8.8.8 -c 4\n", binself)
+	fmt.Printf("  %sFILE=data.prom %sLABEL_type=sample %s -d 3 -l env=dev -- ./mycommand.sh arg1 arg2\n", EnvVarPrefix, EnvVarPrefix, binself)
+	fmt.Println("")
+	fmt.Println("Sync mode examples:")
+	fmt.Println("  # Wait for a client sync to start the command")
+	fmt.Printf("  %s -s -- date\n", binself)
+	fmt.Println("  # Connect to server on <localhost> to start and stop the command")
+	fmt.Printf("  %s -c localhost -- echo start date now\n", binself)
 }
 
 func appendToResultFile(text string) {
@@ -136,81 +148,218 @@ func appendToResultFile(text string) {
 
 }
 
-func parseEnvVars() {
+func parseArgs() []string {
+	var err error
+	cmd := []string{}
 
-	// Read metrics file from environment variable, or use default
-	metricsFile = os.Getenv(EnvVarPrefix + "METRICS_FILE")
-	if metricsFile == "" {
-		metricsFile = jobName + "_metrics.prom"
-	}
+	for i := 1; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "-f", "--file":
+			metricsFile = os.Args[i+1]
+			i++
 
-	// Read instance from environment variable, or use default
-	instanceOverride = os.Getenv(EnvVarPrefix + "INSTANCE")
+		case "-i", "--instance":
+			instanceOverride = os.Args[i+1]
+			i++
 
-	// Read time relative from environment variable, or use default
-	timeRelativeStr := os.Getenv(EnvVarPrefix + "TIME_RELATIVE")
-	if timeRelativeStr != "" {
-		var err error
-		metricsStartTimeOverride, err = strconv.ParseInt(timeRelativeStr, 10, 64)
-		if err != nil {
-			panic(fmt.Sprintln("Error parsing "+EnvVarPrefix+"TIME_RELATIVE env var, must be an int64 (timestamp in ms since epoch), found : ", timeRelativeStr))
+		case "-mst", "--metrics-start-time":
+			metricsStartTimeOverride, err = strconv.ParseInt(os.Args[i+1], 10, 64)
+			if err != nil {
+				fmt.Println("Error parsing metrics time override:", err)
+				os.Exit(1)
+			}
+			i++
+
+		case "-c", "--connect":
+			if role == "server" {
+				fmt.Println("Error: server and client modes are mutually exclusive")
+				os.Exit(1)
+			}
+			role = "client"
+			serverIp = os.Args[i+1]
+			i++
+		case "-s", "--server":
+			if role == "client" {
+				fmt.Println("Error: server and client modes are mutually exclusive")
+				os.Exit(1)
+			}
+			role = "server"
+
+		case "-sp", "--sync-port":
+			syncPort = os.Args[i+1]
+			i++
+		case "-sso", "--sync-start-only":
+			syncWaitForStop = false
+
+		// Delay in seconds
+		case "-d", "--delay":
+			timeToWaitInScd, err := strconv.ParseInt(os.Args[i+1], 10, 64)
+			if err != nil {
+				fmt.Println("Error parsing wait time:", err)
+				os.Exit(1)
+			}
+			delayBeforeCommand = timeToWaitInScd
+			delayAfterCommand = timeToWaitInScd
+			i++
+		case "-dbc", "--delay-before-command":
+			timeToWaitInMs, err := strconv.ParseInt(os.Args[i+1], 10, 64)
+			if err != nil {
+				fmt.Println("Error parsing wait time:", err)
+				os.Exit(1)
+			}
+			delayBeforeCommand = timeToWaitInMs
+			i++
+		case "-dac", "--delay-after-command":
+			timeToWaitInMs, err := strconv.ParseInt(os.Args[i+1], 10, 64)
+			if err != nil {
+				fmt.Println("Error parsing wait time:", err)
+				os.Exit(1)
+			}
+			delayAfterCommand = timeToWaitInMs
+			i++
+
+		// Extra labels
+		case "-l", "--label":
+			parts := strings.SplitN(os.Args[i+1], "=", 2)
+			if len(parts) == 2 {
+				addLabel(parts[0], parts[1])
+			} else {
+				fmt.Println("Error parsing label:", os.Args[i+1])
+				os.Exit(1)
+			}
+			i++
+
+		case "-v", "--version":
+			fmt.Println(version)
+			os.Exit(0)
+		case "-h", "-help", "--help":
+			usage()
+			os.Exit(0)
+		case "--":
+			cmd = os.Args[i+1:]
+			i = len(os.Args)
+		default:
+			cmd = os.Args[i:]
+			i = len(os.Args)
 		}
 	}
-
-	// Read wait time before command from environment variable, or use default
-	waitTimeBeforeCommandStr := os.Getenv(EnvVarPrefix + "WAIT_TIME_BEFORE_COMMAND")
-	if waitTimeBeforeCommandStr != "" {
-		var err error
-		waitTimeBeforeCommand, err = strconv.ParseInt(waitTimeBeforeCommandStr, 10, 64)
-		if err != nil {
-			panic(fmt.Sprintln("Error parsing "+EnvVarPrefix+"WAIT_TIME_BEFORE_COMMAND env var, must be an int64 (time in ms), found : ", waitTimeBeforeCommandStr))
-		}
-	} else {
-		waitTimeBeforeCommand = 0
-	}
-
-	// Read wait time after command from environment variable, or use default
-	waitTimeAfterCommandStr := os.Getenv(EnvVarPrefix + "WAIT_TIME_AFTER_COMMAND")
-	if waitTimeAfterCommandStr != "" {
-		var err error
-		waitTimeAfterCommand, err = strconv.ParseInt(waitTimeAfterCommandStr, 10, 64)
-		if err != nil {
-			panic(fmt.Sprintln("Error parsing "+EnvVarPrefix+"WAIT_TIME_AFTER_COMMAND env var, must be an int64 (time in ms), found : ", waitTimeAfterCommandStr))
-		}
-	} else {
-		waitTimeAfterCommand = 0
-	}
-
-	// Get extra labels from environment variables
-	extraLabels = parseExtraLabelsFromEnv()
+	return cmd
 }
 
-func parseExtraLabelsFromEnv() map[string]string {
+func parseEnvVars() {
+	var err error
+	// Metrics file (-f, --file)
+	if value := os.Getenv(EnvVarPrefix + "FILE"); value != "" {
+		metricsFile = value
+	}
+
+	// Instance name (-i, --instance)
+	if value := os.Getenv(EnvVarPrefix + "INSTANCE"); value != "" {
+		instanceOverride = value
+	}
+
+	// Metrics start time (-mst, --metrics-start-time)
+	if value := os.Getenv(EnvVarPrefix + "METRICS_START_TIME"); value != "" {
+		metricsStartTimeOverride, err = strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			fmt.Println("Error parsing "+EnvVarPrefix+"METRICS_START_TIME env var, must be an int64 (timestamp in ms since epoch), found : ", value)
+			os.Exit(1)
+		}
+	}
+
+	// Connect to server (-c, --connect)
+	if value := os.Getenv(EnvVarPrefix + "CONNECT"); value != "" {
+		if role == "server" {
+			fmt.Println("Error: server and client modes are mutually exclusive")
+			os.Exit(1)
+		}
+		role = "client"
+		serverIp = value
+	}
+
+	// Start server (-s, --server)
+	if value := os.Getenv(EnvVarPrefix + "SERVER"); value != "" {
+		if role == "client" {
+			fmt.Println("Error: server and client modes are mutually exclusive")
+			os.Exit(1)
+		}
+		role = "server"
+	}
+
+	// Sync port (-sp, --sync-port)
+	if value := os.Getenv(EnvVarPrefix + "SYNC_PORT"); value != "" {
+		syncPort = value
+	}
+
+	// Sync start only (-sso, --sync-start-only)
+	if value := os.Getenv(EnvVarPrefix + "SYNC_START_ONLY"); value != "" {
+		syncWaitForStop = false
+	}
+
+	// Delay in seconds (-d, --delay)
+	if value := os.Getenv(EnvVarPrefix + "DELAY"); value != "" {
+		timeToWaitInScd, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			fmt.Println("Error parsing "+EnvVarPrefix+"DELAY env var, must be an int64 (time in ms), found : ", value)
+			os.Exit(1)
+		}
+		delayBeforeCommand = timeToWaitInScd
+		delayAfterCommand = timeToWaitInScd
+	}
+
+	// Delay before command in seconds (-dbc, --delay-before-command)
+	if value := os.Getenv(EnvVarPrefix + "DELAY_BEFORE_COMMAND"); value != "" {
+		timeToWaitInScd, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			fmt.Println("Error parsing "+EnvVarPrefix+"DELAY_BEFORE_COMMAND env var, must be an int64 (time in ms), found : ", value)
+			os.Exit(1)
+		}
+		delayBeforeCommand = timeToWaitInScd
+	}
+
+	// Delay after command in seconds (-dac, --delay-after-command)
+	if value := os.Getenv(EnvVarPrefix + "DELAY_AFTER_COMMAND"); value != "" {
+		timeToWaitInScd, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			fmt.Println("Error parsing "+EnvVarPrefix+"DELAY_AFTER_COMMAND env var, must be an int64 (time in ms), found : ", value)
+			os.Exit(1)
+		}
+		delayAfterCommand = timeToWaitInScd
+	}
+
+	// Get extra labels from environment variables (-l, --label)
+	parseExtraLabelsFromEnv()
+}
+
+func addLabel(key string, value string) {
 	// List of forbidden label names
 	forbiddenKeys := []string{"instance", "job", "cpu", "mode", "interface"}
 
-	extraLabels := make(map[string]string)
+	// Replace non-alphanumeric characters with underscores
+	safeKey := regexp.MustCompile(`[^a-zA-Z0-9]`).ReplaceAllString(key, "_")
+
+	// Check if key is not forbidden
+	for _, forbiddenKey := range forbiddenKeys {
+		if safeKey == forbiddenKey {
+			fmt.Printf("Override label %s is forbidden", key)
+			os.Exit(1)
+		}
+	}
+
+	extraLabels[strings.ToLower(safeKey)] = value
+}
+
+func parseExtraLabelsFromEnv() map[string]string {
 	for _, env := range os.Environ() {
-
 		if strings.HasPrefix(env, EnvVarPrefix+"LABEL_") {
-
-			parts := strings.SplitN(env, "=", 2)
+			parts := strings.Split(env, "=")
 			if len(parts) == 2 {
 				key := strings.TrimPrefix(parts[0], EnvVarPrefix+"LABEL_")
 				value := parts[1]
-
-				// Replace non-alphanumeric characters with underscores
-				safeKey := regexp.MustCompile(`[^a-zA-Z0-9]`).ReplaceAllString(key, "_")
-
-				// Check if key is not forbidden
-				for _, forbiddenKey := range forbiddenKeys {
-					if safeKey == forbiddenKey {
-						panic(fmt.Sprintln("Error parsing " + EnvVarPrefix + "LABEL_" + key + " env var, label " + safeKey + " is forbidden"))
-					}
-				}
-
-				// Add label
-				extraLabels[strings.ToLower(safeKey)] = value
+				addLabel(key, value)
+			} else {
+				fmt.Println("Error parsing label of ENV :", env)
+				os.Exit(1)
 			}
 		}
 	}
@@ -340,13 +489,6 @@ func startCommand(cmd *exec.Cmd) {
 		metricsStartTime = realStartTime.UnixMilli()
 	}
 
-	// Get instance name from environment variable, or use default (first argument of the command)
-	if instanceOverride != "" {
-		instance = instanceOverride
-	} else {
-		instance = cmd.Args[0]
-	}
-
 	// Connect the command's standard input/output/error to those of the program
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -364,8 +506,8 @@ func startCommand(cmd *exec.Cmd) {
 	}()
 
 	// Wait before starting the command
-	if waitTimeBeforeCommand > 0 {
-		time.Sleep(time.Duration(waitTimeBeforeCommand) * time.Second)
+	if delayBeforeCommand > 0 {
+		time.Sleep(time.Duration(delayBeforeCommand) * time.Second)
 	}
 
 	// Catch interrupt signal and forward it to the child process
@@ -425,8 +567,8 @@ func startCommand(cmd *exec.Cmd) {
 	})
 
 	// Wait after the command
-	if waitTimeAfterCommand > 0 {
-		time.Sleep(time.Duration(waitTimeAfterCommand) * time.Second)
+	if delayAfterCommand > 0 {
+		time.Sleep(time.Duration(delayAfterCommand) * time.Second)
 	}
 
 	// Signal to stop gathering metrics
@@ -441,7 +583,7 @@ func startGathering(quit chan struct{}) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	secondesSinceGatheringStart = 0
+	secondesSinceGatheringStart := 0
 
 	gatherMetrics(secondesSinceGatheringStart)
 
@@ -490,7 +632,7 @@ func gatherMetrics(secondesSinceStart int) error {
 	timeBeforeGathering := time.Now()
 	metricsBuffer := ""
 	defaultLabels := generateLabelRender(nil)
-	currentTimestamp := metricsStartTime + int64(secondesSinceGatheringStart)*1000
+	currentTimestamp := metricsStartTime + int64(secondesSinceStart)*1000
 
 	// Command status
 

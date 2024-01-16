@@ -7,39 +7,81 @@
 - **Multiple Execution Modes:** Supports standalone execution, and client-server start/stop synchronization.
 - **Metrics Gathering:** Collects and records detailed system metrics, including CPU, memory, and network usage. 
 - **Standard format for metrics:** Metrics are written in a file in [OpenMetrics](https://openmetrics.io/) format (Prometheus compatible).
-- **Flexible Configuration:** Customizable through environment variables for tailored usage in different scenarios.
+- **Flexible Configuration:** Customizable through environment variables or flags for tailored usage in different scenarios.
 
 ## Usage
 
 The general syntax for using `statexec` is:
 
 ```bash
-statexec <mode> <command>
+statexec [OPTIONS] <command> [command args]
 ```
 
-Where `<mode>` can be one of the following:
-- `exec`: Execute the command without synchronization.
-- `waitStart`: Start an HTTP server and wait for a /start request before executing the command.
-- `waitStartAndStop`: Similar to waitStart but also waits for a /stop request to stop the command.
-- `syncStart <url>`: Send /start request to the server `<url>` before to start the command.
-- `syncStartAndStop <url>`:  Send /start and /stop request to the server `<url>` respectively before the start and after the stop of the command.
-  
 For more detailed usage instructions, use:
 
 ```bash
-statexec help
+statexec --help
 ```
 
-## Environment Variables
+## Configuration
 
-`statexec` can be configured using the following environment variables:
+`statexec` can be configured via flags or via environment variables:
 
-- `SE_METRICS_FILE`: Path to the file where metrics will be written. (default is `/tmp/statexec_metrics.txt`)
-- `SE_INSTANCE`: Override metrics label instance. (default is machine hostname)
-- `SE_TIME_RELATIVE`: Defines a custom reference timestamp in milliseconds since the epoch (Unix timestamp). This timestamp is used as a baseline for generating relative timestamps in metrics. If set to `-1` (minus one), the current system time is used as the reference. This feature is particularly useful for synchronizing metrics across multiple instances or aligning them with external events. (Default is `-1`)
-- `SE_WAIT_TIME_BEFORE_COMMAND`: Optionnal time in seconds time to wait while wollecting metrics before to start the command. (Default is `0`)
-- `SE_WAIT_TIME_AFTER_COMMAND`: Optionnal time in seconds to wait while wollecting metrics after the command has finished. (Default is `0`)
-- `SE_LABEL_<key>`: Extra labels to add to all metrics.
+- `--file, -f <file>` or env `SE_FILE=<file>` 
+
+  Metrics file output (default: statexec_metrics.prom)
+
+- `--instance, -i <instance>` or env `SE_INSTANCE=<instance>` 
+ 
+  Instance name (default: <command>)
+
+- `--metrics-start-time, -mst <timestamp>` or env `SE_METRICS_START_TIME=<timestamp>`
+
+  Metrics start time in milliseconds (default: now)
+
+- `--delay, -d <seconds>` (env `SE_DELAY`): 
+ 
+  Delay in seconds before and after the command (default: 0)
+
+- `--delay-before-command, -dbc <seconds>` or env `SE_DELAY_BEFORE_COMMAND=<seconds>` 
+  
+  Delay in seconds before the command (default: 0)
+
+- `--delay-after-command, -dac <seconds>` or env `SE_DELAY_AFTER_COMMAND=<seconds>`
+
+  Delay in seconds after the command (default: 0)
+
+- `--label, -l <key>=<value>` or env `SE_LABEL_<key>=<value>`
+
+  Add extra label `<key>=<value>` to all metrics, flag can be repeated
+
+- `--connect, -c <ip>` or env `SE_CONNECT=<ip>`
+
+  Connect to a statexec in server mode to synchronize command execution, sending a start request at command initiation and a stop signal upon completion.
+
+- `--server, -s` or env `SE_SERVER`
+  
+  Start a statexec in server mode to manage command synchronization, receiving a start request when the client command begins and a stop signal once it concludes.
+
+- `--sync-port, -sp <port>` or env `SE_SYNC_PORT=<port>`
+
+  Sync port (default: 8080)
+
+- `--sync-start-only, -sso` or env `SE_SYNC_START_ONLY`
+
+  When running in server or client mode, only commands start will be synchronized, letting them stop by themselves (default: false)
+  
+- `--version, -v`
+  
+  Print version and exit
+
+- `--help, -help, -h`
+
+  Print help and exit
+
+- `--`
+
+  Stop parsing arguments
 
 ## Examples
 
@@ -48,13 +90,19 @@ statexec help
 Simple ping command :
 
 ```bash
-statexec exec ping -c 10 google.com
+statexec ping -c 10 google.com
 ```
 
 Add a label to all metrics :
 
 ```bash
-SE_LABEL_env=prod statexec exec grep "ERROR" /var/log/syslog
+SE_LABEL_env=prod statexec dd if=/dev/urandom of=/tmp/bigfile bs=1M count=1000
+```
+
+Separate statexec args from command for better clarity :
+
+```bash
+statexec -d 3 -f myfile.prom -- grep "ERROR" /var/log/syslog
 ```
 
 ### Synchronized mode
@@ -66,54 +114,79 @@ This example demonstrates a synchronized network performance test using `iperf3`
 First, we set up the iperf3 server:
 
 ```bash
-export SE_INSTANCE=localhost
-export SE_TIME_RELATIVE=1704067200000 # 2024-01-01 00:00:00 UTC
+export SE_METRICS_START_TIME=1704067200000 # 2024-01-01 00:00:00 UTC
 export SE_LABEL_BENCHMARK=sample 
-export SE_WAIT_TIME_AFTER_COMMAND=5 # Monitored Cooldown
-go run main.go waitStartAndStop iperf3 -s
+export SE_DELAY_AFTER_COMMAND=5
+export SE_FILE=server.prom
+statexec -s iperf3 -s
+
+# OR 
+
+statexec -s -mst 1704067200000 -l benchmark=sample -dac 5 -- iperf3 -s
 ```
 
-- `SE_INSTANCE`: Identifies the server instance as 'localhost'.
-- `SE_TIME_RELATIVE`: Sets a fixed reference time for metrics, so result will not depend on real start time.
-- `SE_LABEL_BENCHMARK`: Adds a custom label to categorize these metrics under label `benchmark=sample`.
-- `SE_WAIT_TIME_AFTER_COMMAND`: Configures a cooldown period where metrics continue to be collected for 5 seconds after iperf3 completes its execution.
+- `SE_METRICS_START_TIME` or `-mst`: Sets a fixed reference time for metrics, so result will not depend on real start time.
+- `SE_LABEL_BENCHMARK=sample` or `-l benchmark=sample`: Adds a custom label `benchmark=sample` to every metrics.
+- `SE_DELAY_AFTER_COMMAND` or `-dac`: Configures a cooldown period where metrics continue to be collected for 5 seconds after iperf3 completes its execution.
+- `SE_FILE` configures the output file written by statexec containing metrics in openmetrics format
+- `-s` flag is to start statexec in server mode, waiting for a client to synchronize executions of commands
+- `--` is a separator flag, everything after is the command to start
+- `iperf3 -s` is the actual command started by statexec
 
-The waitStartAndStop mode starts an HTTP server on port 8080 and waits for a /start request to initiate the iperf3 server. After the test, it waits for a /stop request.
+The `server` mode starts an HTTP server (by default on port 8080) and waits for a /start request to initiate the iperf3 server. After the test, it waits for a /stop request.
 
 #### Setting up the iperf3 Client
 
 Next, we configure the iperf3 client:
 
 ```bash
-export SE_INSTANCE=localhost
-export SE_TIME_RELATIVE=1704067200000 # 2024-01-01 00:00:00 UTC
+
+export SE_METRICS_START_TIME=1704067200000 # 2024-01-01 00:00:00 UTC
 export SE_LABEL_BENCHMARK=sample 
-export SE_WAIT_TIME_AFTER_COMMAND=5 # Monitored Cooldown
-export SE_WAIT_TIME_BEFORE_COMMAND=2 # Wait for server to start before to start client
-go run main.go syncStartAndStop http://localhost:8080 iperf3 -c 127.0.0.1
+export SE_DELAY_AFTER_COMMAND=5
+export SE_DELAY_BEFORE_COMMAND=2
+export SE_FILE=client.prom
+statexec --connect localhost -- iperf3 -c 127.0.0.1
+
+# OR
+
+statexec -mst 1704067200000  -l benchmark=sample -dbc 2 -dac 5 -f client.prom -c localhost -- iperf3 -s
 ```
 
-- `SE_WAIT_TIME_BEFORE_COMMAND`: Introduces a delay of 2 seconds while collecting metrics before starting the client, ensuring the server is ready to accept connections.
+- `SE_DELAY_BEFORE_COMMAND`: Introduces a delay of 2 seconds while collecting metrics before starting the client, ensuring the server is ready to accept connections.
+- `--connect localhost` flag is to start statexec in client mode, sending notificatons to the server at `localhost` to synchronize executions of commands
+- `iperf3 -c 127.0.0.1` is the actual command started by statexec
 
-The syncStartAndStop mode instructs the client to send a /start request to the server (at http://localhost:8080) and initiate the `iperf3` client command. Once the test is over, it sends a /stop request to the server.
+The client mode instructs the client to send a /start request to the server (at http://localhost:8080) and initiate the `iperf3` client command. Once the test is over, it sends a /stop request to the server.
 
 This setup ensures both server and client start their respective `iperf3` commands in a coordinated manner, and system metrics are gathered on both sides with synchronized timestamps, allowing for accurate analysis of network performance and system behavior during the test.
 
 
-### Results
+## Exploring results with Grafana
 
-After running `statexec`, the metrics collected during the execution of your command are stored in a designated file. This file provides a detailed record of various system metrics captured during the command's runtime, formatted for compatibility with monitoring and analysis tools.
+### Prerequisites
 
-To give you a better idea of what this output looks like and the type of data statexec gathers, we have included an example metrics file. You can find this file at [example/statexec_metrics.txt](example/statexec_metrics.txt). This example file showcases the format and types of metrics statexec records, such as CPU usage, memory consumption, and network activity, among others. It is a result of the "Synchronized mode" example.
+Ensure you have `docker-compose` installed, as it's essential for setting up the Victoria Metrics `VMSingle` and `Grafana` visualization stack. This tool facilitates the deployment and integration of the services required for metric exploration.
+
+### Explore metrics
+
+Once you've run statexec, the metrics gathered during your command's execution are saved in a specific file, designed for easy integration with monitoring and visualization tools. To explore these metrics in-depth:
+
+- Place the metric(s) file(s) in the `explorer/import/` folder (name must be *.prom).
+- Execute the command `make explore`.
+
+This initiates a visualization stack comprising Victoria Metrics VMSingle and Grafana. This setup includes a preprovisioned datasource and dashboard, tailored for an insightful exploration of your command's performance metrics. With this, you can delve into detailed system metrics captured during the runtime, gaining valuable insights into performance and operational dynamics.
+
+To illustrate the process without needing to first execute statexec, the explorer/import folder contains three sample files by default. These samples demonstrate the type of data statexec captures and how it's visualized in the stack. This is an excellent way to familiarize yourself with the system's capabilities and the types of insights you can glean from your metrics before running your own commands.
 
 ## Exporting and Importing Metrics
 
 ### Viewing Collected Metrics
 
-`statexec` stores the collected metrics in a specified file, which by default is `/tmp/statexec_metrics.txt`. To view the contents of this file and the collected metrics, use the following command:
+`statexec` stores the collected metrics in a specified file, which by default is `statexec_metrics.txt`. To view the contents of this file and the collected metrics, use the following command:
 
 ```bash 
-cat /tmp/statexec_metrics.txt
+cat statexec_metrics.txt
 ```
 
 This command displays the metrics in Prometheus exposition format, which can be easily imported into various monitoring systems.
@@ -123,7 +196,7 @@ This command displays the metrics in Prometheus exposition format, which can be 
 To import the collected metrics into a Victoria Metrics VMsingle instance, use the following curl command. This command sends a POST request to the Victoria Metrics import API, uploading the metrics file:
 
 ```bash
-curl -v -X POST http://vmsingle:8428/api/v1/import/prometheus -T /tmp/statexec_metrics.txt
+curl -v -X POST http://vmsingle:8428/api/v1/import/prometheus -T statexec_metrics.txt
 ```
 
 - `-v`: Verbose mode. Provides additional details about the request and response for debugging purposes.
@@ -142,7 +215,7 @@ This command will transmit the metrics data to Victoria Metrics, allowing it to 
 For example, you can start a shell with `statexec`:
 
 ```bash
-go run main.go exec bash
+statexec bash
 ```
 
 In this mode, `statexec` will behave as if you're directly interacting with the bash shell, with the added benefit of metric collection in the background.
