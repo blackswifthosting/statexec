@@ -512,7 +512,7 @@ func startCommand(cmd *exec.Cmd) {
 	}
 
 	commandState = CommandStatusRunning
-	commandStartedAtTime := metricsStartTime + time.Now().UnixMilli() - realStartTime.UnixMilli()
+	commandStartedAtTime := time.Now().UnixMilli() - realStartTime.UnixMilli()
 	collectInstantMetrics(commandStartedAtTime)
 
 	// Annotate the command start
@@ -533,7 +533,7 @@ func startCommand(cmd *exec.Cmd) {
 	_ = cmd.Wait()
 
 	commandState = CommandStatusDone
-	commandFinishedAtTime := metricsStartTime + time.Now().UnixMilli() - realStartTime.UnixMilli()
+	commandFinishedAtTime := time.Now().UnixMilli() - realStartTime.UnixMilli()
 	collectInstantMetrics(commandFinishedAtTime)
 
 	// Annotate the command end
@@ -634,6 +634,9 @@ func collectInstantMetrics(msSinceStart int64) {
 
 func writeResultToFile() error {
 	defaultLabels := renderLabels(nil)
+
+	// Delete metrics file
+	_ = os.Remove(metricsFile)
 
 	// Open metrics file in append mode
 	resultFile, err := os.OpenFile(metricsFile, os.O_CREATE|os.O_WRONLY, 0644)
