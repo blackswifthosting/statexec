@@ -512,12 +512,13 @@ func startCommand(cmd *exec.Cmd) {
 	}
 
 	commandState = CommandStatusRunning
+	commandStartedAtTime := metricsStartTime + time.Now().UnixMilli() - realStartTime.UnixMilli()
+	collectInstantMetrics(commandStartedAtTime)
 
-	// Write annotation
-	annotationTime := metricsStartTime + time.Now().UnixMilli() - realStartTime.UnixMilli()
+	// Annotate the command start
 	annotationStore = append(annotationStore, GrafanaAnnotation{
-		Time:    annotationTime,
-		TimeEnd: annotationTime,
+		Time:    commandStartedAtTime,
+		TimeEnd: commandStartedAtTime,
 		Text:    "Command started",
 		Tags: []string{
 			"statexec",
@@ -532,12 +533,13 @@ func startCommand(cmd *exec.Cmd) {
 	_ = cmd.Wait()
 
 	commandState = CommandStatusDone
+	commandFinishedAtTime := metricsStartTime + time.Now().UnixMilli() - realStartTime.UnixMilli()
+	collectInstantMetrics(commandFinishedAtTime)
 
-	// Write annotation
-	annotationTime = metricsStartTime + time.Now().UnixMilli() - realStartTime.UnixMilli()
+	// Annotate the command end
 	annotationStore = append(annotationStore, GrafanaAnnotation{
-		Time:    annotationTime,
-		TimeEnd: annotationTime,
+		Time:    commandFinishedAtTime,
+		TimeEnd: commandFinishedAtTime,
 		Text:    "Command done with status " + strconv.Itoa(cmd.ProcessState.ExitCode()),
 		Tags: []string{
 			"statexec",
