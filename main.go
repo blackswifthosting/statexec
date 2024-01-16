@@ -77,43 +77,33 @@ type InstantMetric struct {
 func main() {
 	// Default values
 	metricsFile = jobName + "_metrics.prom"
+
+	// Initialize extra labels to an empty map
 	extraLabels = make(map[string]string)
 
 	// Parse environment variables
 	parseEnvVars()
 
+	// Parse command line arguments
 	cmd := parseArgs()
 
+	// Override instance name if set, else use command name
 	if instanceOverride != "" {
 		instance = instanceOverride
 	} else {
 		instance = cmd[0]
 	}
 
-	fmt.Println("Command: " + strings.Join(cmd, " "))
-
-	fmt.Printf("Metrics file: %s\n", metricsFile)
-	fmt.Printf("Instance: %s\n", instance)
-	fmt.Printf("Metrics start time: %d\n", metricsStartTimeOverride)
-	fmt.Printf("Delay before command: %d\n", delayBeforeCommand)
-	fmt.Printf("Delay after command: %d\n", delayAfterCommand)
-	fmt.Printf("Role: %s\n", role)
-	fmt.Printf("Server IP: %s\n", serverIp)
-	fmt.Printf("Sync port: %s\n", syncPort)
-	fmt.Printf("Sync wait for stop: %v\n", syncWaitForStop)
-	fmt.Printf("Extra labels: %v\n", extraLabels)
-
+	// Create command to execute
 	execCmd := exec.Command(cmd[0], cmd[1:]...)
 
+	// Start statexec in the right mode
 	switch role {
 	case "standalone":
-		fmt.Println("Starting statexec in standalone mode")
 		startCommand(execCmd)
 	case "client":
-		fmt.Printf("Starting statexec as client of http://%s:%s (withstop : %v)", serverIp, syncPort, syncWaitForStop)
 		syncStartCommand(execCmd, fmt.Sprintf("http://%s:%s", serverIp, syncPort), syncWaitForStop)
 	case "server":
-		fmt.Printf("Starting statexec as server on port %s (withstop : %v)", syncPort, syncWaitForStop)
 		waitForHttpSyncToStartCommand(execCmd, syncWaitForStop)
 	}
 }
@@ -131,7 +121,6 @@ func usage() {
 	fmt.Printf("  --delay-before-command, -dbc <seconds>  %sDELAY_BEFORE_COMMAND Delay in seconds  before the command (default: 0)\n", EnvVarPrefix)
 	fmt.Printf("  --delay-after-command, -dac <seconds>   %sDELAY_AFTER_COMMAND  Delay in seconds  after the command (default: 0)\n", EnvVarPrefix)
 	fmt.Printf("  --label, -l <key>=<value>               %sLABEL_<key>          Extra label to add to all metrics (no default)\n", EnvVarPrefix)
-	fmt.Println("")
 	fmt.Printf("Synchronization options:\n")
 	fmt.Printf("  --server, -s               %s                   Start server mode (no default)\n", strings.Repeat(" ", len(EnvVarPrefix)))
 	fmt.Printf("  --connect, -c <ip>         %sCONNECT            Connect to server on <ip> (no default)\n", EnvVarPrefix)
@@ -376,24 +365,24 @@ func parseExtraLabelsFromEnv() map[string]string {
 
 func syncStartCommand(cmd *exec.Cmd, syncServerUrl string, syncStop bool) {
 
-	fmt.Println("Sending start sync at " + syncServerUrl + "/start")
+	// Sending start sync at server
 	_, err := http.Post(syncServerUrl+"/start", "text/plain", nil)
 	if err != nil {
 		fmt.Println("Error sending start sync request:", err)
 		os.Exit(1)
 	}
-	fmt.Println("Start sync done")
 
+	// Start the command
 	startCommand(cmd)
 
+	// Check if we need to sync the stop to the server
 	if syncStop {
-		fmt.Println("Sending stop sync at " + syncServerUrl + "/stop")
+		// Sending stop sync at server
 		_, err := http.Post(syncServerUrl+"/stop", "text/plain", nil)
 		if err != nil {
 			fmt.Println("Error sending stop sync request:", err)
 			os.Exit(1)
 		}
-		fmt.Println("Command finished sync ")
 	}
 }
 
@@ -466,6 +455,7 @@ func waitForHttpSyncToStartCommand(cmd *exec.Cmd, waitForStop bool) {
 	err := server.ListenAndServe()
 	if err != nil && err != http.ErrServerClosed {
 		fmt.Println("Error starting the server:", err)
+		os.Exit(1)
 	}
 }
 
