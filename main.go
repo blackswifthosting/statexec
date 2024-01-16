@@ -38,6 +38,9 @@ var (
 	metricsStartTime int64 // in milliseconds
 	instance         string
 	commandState     int = 0
+
+	metricStore     []InstantMetric
+	annotationStore []GrafanaAnnotation
 )
 
 const (
@@ -51,6 +54,24 @@ const (
 	ModeLeader     = 1
 	ModeFollower   = 2
 )
+
+type GrafanaAnnotation struct {
+	Time    int64    `json:"time"`
+	TimeEnd int64    `json:"timeEnd"`
+	Text    string   `json:"text"`
+	Tags    []string `json:"tags"`
+}
+
+type InstantMetric struct {
+	cmdStatus          int
+	cpu                []collectors.CpuMetrics
+	memory             collectors.MemoryMetrics
+	network            []collectors.NetworkMetrics
+	disk               []collectors.DiskMetrics
+	secondesSinceStart int
+	collectDuration    int64
+	timestamp          int64
+}
 
 func main() {
 	// Default values
@@ -67,9 +88,6 @@ func main() {
 	} else {
 		instance = cmd[0]
 	}
-
-	// Delete metrics file if it exists
-	_ = os.Remove(metricsFile)
 
 	fmt.Println("Command: " + strings.Join(cmd, " "))
 
@@ -131,21 +149,6 @@ func usage() {
 	fmt.Printf("  %s -s -- date\n", binself)
 	fmt.Println("  # Connect to server on <localhost> to start and stop the command")
 	fmt.Printf("  %s -c localhost -- echo start date now\n", binself)
-}
-
-func appendToResultFile(text string) {
-	// Open metrics file in append mode
-	resultFile, err := os.OpenFile(metricsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Println("Error opening metrics file:", err)
-		os.Exit(1)
-	}
-	defer resultFile.Close()
-	if _, err := resultFile.WriteString(text); err != nil {
-		fmt.Println("Error writing to metrics file:", err)
-		os.Exit(1)
-	}
-
 }
 
 func parseArgs() []string {
@@ -396,7 +399,7 @@ func waitForHttpSyncToStartCommand(cmd *exec.Cmd, waitForStop bool) {
 	var cmdFinished = false
 
 	server := &http.Server{
-		Addr: ":8080",
+		Addr: ":" + syncPort,
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -461,22 +464,6 @@ func waitForHttpSyncToStartCommand(cmd *exec.Cmd, waitForStop bool) {
 	}
 }
 
-type GrafanaAnnotation struct {
-	Time    int64    `json:"time"`
-	TimeEnd int64    `json:"timeEnd"`
-	Text    string   `json:"text"`
-	Tags    []string `json:"tags"`
-}
-
-func writeAnnotation(annotation GrafanaAnnotation) {
-	annotationBuffer, err := json.Marshal(annotation)
-	if err != nil {
-		fmt.Println("Error marshalling annotation:", err)
-		os.Exit(1)
-	}
-	appendToResultFile("#grafana-annotation " + string(annotationBuffer) + "\n")
-}
-
 func startCommand(cmd *exec.Cmd) {
 	var err error
 	var wg sync.WaitGroup
@@ -502,7 +489,7 @@ func startCommand(cmd *exec.Cmd) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		startGathering(quit)
+		startMetricCollectLoop(quit)
 	}()
 
 	// Wait before starting the command
@@ -533,7 +520,7 @@ func startCommand(cmd *exec.Cmd) {
 
 	// Write annotation
 	annotationTime := metricsStartTime + time.Now().UnixMilli() - realStartTime.UnixMilli()
-	writeAnnotation(GrafanaAnnotation{
+	annotationStore = append(annotationStore, GrafanaAnnotation{
 		Time:    annotationTime,
 		TimeEnd: annotationTime,
 		Text:    "Command started",
@@ -553,10 +540,10 @@ func startCommand(cmd *exec.Cmd) {
 
 	// Write annotation
 	annotationTime = metricsStartTime + time.Now().UnixMilli() - realStartTime.UnixMilli()
-	writeAnnotation(GrafanaAnnotation{
+	annotationStore = append(annotationStore, GrafanaAnnotation{
 		Time:    annotationTime,
 		TimeEnd: annotationTime,
-		Text:    "Command done",
+		Text:    "Command done with status " + strconv.Itoa(cmd.ProcessState.ExitCode()),
 		Tags: []string{
 			"statexec",
 			"done",
@@ -579,21 +566,22 @@ func startCommand(cmd *exec.Cmd) {
 }
 
 // Start gathering metrics with a 1 second interval
-func startGathering(quit chan struct{}) {
+func startMetricCollectLoop(quit chan struct{}) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	secondesSinceGatheringStart := 0
 
-	gatherMetrics(secondesSinceGatheringStart)
+	collectMetrics(secondesSinceGatheringStart)
 
 	stopGatheringNextIteration := false
 	for {
 		select {
 		case <-ticker.C:
 			secondesSinceGatheringStart++
-			gatherMetrics(secondesSinceGatheringStart)
+			collectMetrics(secondesSinceGatheringStart)
 			if stopGatheringNextIteration {
+				writeResultToFile()
 				return
 			}
 		case <-quit:
@@ -628,69 +616,108 @@ func generateLabelRender(metricsLabels map[string]string) string {
 }
 
 // Gather metrics
-func gatherMetrics(secondesSinceStart int) error {
+func collectMetrics(secondesSinceStart int) {
 	timeBeforeGathering := time.Now()
-	metricsBuffer := ""
-	defaultLabels := generateLabelRender(nil)
 	currentTimestamp := metricsStartTime + int64(secondesSinceStart)*1000
 
-	// Command status
+	instantMetric := InstantMetric{
+		cmdStatus:          commandState,
+		cpu:                collectors.CollectCpuMetrics(),
+		memory:             collectors.CollectMemoryMetrics(),
+		network:            collectors.CollectNetworkMetrics(),
+		disk:               collectors.CollectDiskMetrics(),
+		secondesSinceStart: secondesSinceStart,
+		timestamp:          currentTimestamp,
+	}
+	instantMetric.collectDuration = time.Since(timeBeforeGathering).Milliseconds()
+	metricStore = append(metricStore, instantMetric)
+}
 
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"command_status{%s} %d %d\n", defaultLabels, commandState, currentTimestamp)
+func writeResultToFile() error {
+	// Open metrics file in append mode
+	resultFile, err := os.OpenFile(metricsFile, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("Error opening metrics file:", err)
+		os.Exit(1)
+	}
+	defer resultFile.Close()
 
-	// CPU usage
+	defaultLabels := generateLabelRender(nil)
 
-	cpuMetrics := collectors.CollectCpuMetrics()
-	for _, cpuMetric := range cpuMetrics {
-		for mode, cpuTime := range cpuMetric.CpuTimePerMode {
-			metricLabels := map[string]string{
-				"cpu":  cpuMetric.Cpu,
-				"mode": mode,
+	// ====== Write annotation to file ======
+	annotationsBuffer := ""
+	for _, annotation := range annotationStore {
+
+		annotationJson, err := json.Marshal(annotation)
+		if err != nil {
+			fmt.Println("Error marshalling annotation:", err)
+			os.Exit(1)
+		}
+
+		annotationsBuffer += "#grafana-annotation " + string(annotationJson) + "\n"
+	}
+	annotationsBuffer += "\n"
+	if _, err := resultFile.WriteString(annotationsBuffer); err != nil {
+		fmt.Println("Error writing to metrics file:", err)
+		os.Exit(1)
+	}
+
+	// ====== Write metrics to file ======
+	for _, metric := range metricStore {
+		metricsBuffer := ""
+
+		// Command status
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"command_status{%s} %d %d\n", defaultLabels, metric.cmdStatus, metric.timestamp)
+
+		// CPU usage
+		for _, cpuMetric := range metric.cpu {
+			for mode, cpuTime := range cpuMetric.CpuTimePerMode {
+				metricLabels := map[string]string{
+					"cpu":  cpuMetric.Cpu,
+					"mode": mode,
+				}
+				metricsBuffer += fmt.Sprintf(MetricPrefix+"cpu_seconds_total{%s} %f %d\n", generateLabelRender(metricLabels), cpuTime, metric.timestamp)
 			}
-			metricsBuffer += fmt.Sprintf(MetricPrefix+"cpu_seconds_total{%s} %f %d\n", generateLabelRender(metricLabels), cpuTime, currentTimestamp)
+		}
+
+		// Memory usage
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_total_bytes{%s} %d %d\n", defaultLabels, metric.memory.Total, metric.timestamp)
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_available_bytes{%s} %d %d\n", defaultLabels, metric.memory.Available, metric.timestamp)
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_used_bytes{%s} %d %d\n", defaultLabels, metric.memory.Used, metric.timestamp)
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_free_bytes{%s} %d %d\n", defaultLabels, metric.memory.Free, metric.timestamp)
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_buffers_bytes{%s} %d %d\n", defaultLabels, metric.memory.Buffers, metric.timestamp)
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_cached_bytes{%s} %d %d\n", defaultLabels, metric.memory.Cached, metric.timestamp)
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_used_percent{%s} %f %d\n", defaultLabels, metric.memory.UsedPercent, metric.timestamp)
+
+		// Network counters
+		for _, networkMetric := range metric.network {
+			metricLabels := map[string]string{
+				"interface": networkMetric.Interface,
+			}
+			metricsBuffer += fmt.Sprintf(MetricPrefix+"network_sent_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), networkMetric.SentTotalBytes, metric.timestamp)
+			metricsBuffer += fmt.Sprintf(MetricPrefix+"network_received_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), networkMetric.RecvTotalBytes, metric.timestamp)
+		}
+
+		// Disk monitoring
+		for _, diskMetric := range metric.disk {
+			metricLabels := map[string]string{
+				"disk": diskMetric.Device,
+			}
+			renderedLabels := generateLabelRender(metricLabels)
+			metricsBuffer += fmt.Sprintf(MetricPrefix+"disk_read_bytes_total{%s} %d %d\n", renderedLabels, diskMetric.ReadBytesTotal, metric.timestamp)
+			metricsBuffer += fmt.Sprintf(MetricPrefix+"disk_write_bytes_total{%s} %d %d\n", renderedLabels, diskMetric.WriteBytesTotal, metric.timestamp)
+		}
+
+		// Self monitoring
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"seconds_since_start{%s} %d %d\n", defaultLabels, metric.secondesSinceStart, metric.timestamp)
+		metricsBuffer += fmt.Sprintf(MetricPrefix+"metric_collect_duration_ms{%s} %d %d\n", defaultLabels, metric.collectDuration, metric.timestamp)
+
+		// Write metrics to file
+		if _, err := resultFile.WriteString(metricsBuffer); err != nil {
+			fmt.Println("Error writing to metrics file:", err)
+			os.Exit(1)
 		}
 	}
-
-	// Memory usage
-
-	memoryMetrics := collectors.CollectMemoryMetrics()
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_total_bytes{%s} %d %d\n", defaultLabels, memoryMetrics.Total, currentTimestamp)
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_available_bytes{%s} %d %d\n", defaultLabels, memoryMetrics.Available, currentTimestamp)
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_used_bytes{%s} %d %d\n", defaultLabels, memoryMetrics.Used, currentTimestamp)
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_free_bytes{%s} %d %d\n", defaultLabels, memoryMetrics.Free, currentTimestamp)
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_buffers_bytes{%s} %d %d\n", defaultLabels, memoryMetrics.Buffers, currentTimestamp)
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_cached_bytes{%s} %d %d\n", defaultLabels, memoryMetrics.Cached, currentTimestamp)
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"memory_used_percent{%s} %f %d\n", defaultLabels, memoryMetrics.UsedPercent, currentTimestamp)
-
-	// Network counters
-
-	networkMetrics := collectors.CollectNetworkMetrics()
-	for _, networkMetric := range networkMetrics {
-		metricLabels := map[string]string{
-			"interface": networkMetric.Interface,
-		}
-		metricsBuffer += fmt.Sprintf(MetricPrefix+"network_sent_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), networkMetric.SentTotalBytes, currentTimestamp)
-		metricsBuffer += fmt.Sprintf(MetricPrefix+"network_received_bytes_total{%s} %d %d\n", generateLabelRender(metricLabels), networkMetric.RecvTotalBytes, currentTimestamp)
-	}
-
-	// Disk monitoring
-
-	diskMetrics := collectors.CollectDiskMetrics()
-	for _, diskMetric := range diskMetrics {
-		metricLabels := map[string]string{
-			"disk": diskMetric.Device,
-		}
-		renderedLabels := generateLabelRender(metricLabels)
-		metricsBuffer += fmt.Sprintf(MetricPrefix+"disk_read_bytes_total{%s} %d %d\n", renderedLabels, diskMetric.ReadBytesTotal, currentTimestamp)
-		metricsBuffer += fmt.Sprintf(MetricPrefix+"disk_write_bytes_total{%s} %d %d\n", renderedLabels, diskMetric.WriteBytesTotal, currentTimestamp)
-	}
-
-	// Self monitoring
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"seconds_since_start{%s} %d %d\n", defaultLabels, secondesSinceStart, currentTimestamp)
-	metricsBuffer += fmt.Sprintf(MetricPrefix+"metric_generation_duration_ms{%s} %d %d\n", defaultLabels, time.Since(timeBeforeGathering).Abs().Milliseconds(), currentTimestamp)
-
-	// Write metrics to file
-	appendToResultFile(metricsBuffer)
 
 	return nil
 }
