@@ -677,7 +677,6 @@ func computeSummary(firstMetricIndex int, lastMetricIndex int) string {
 	var numberOfMemorySamples = 0
 	for i := firstMetricIndex; i <= lastMetricIndex; i++ {
 		memorySumUsed += metricStore[i].memory.Used
-		fmt.Fprintf(os.Stderr, "Nb : %d / %d\n", metricStore[i].memory.Used, memorySumUsed)
 		memorySumFree += metricStore[i].memory.Free
 		memorySumBuffers += metricStore[i].memory.Buffers
 		memorySumCached += metricStore[i].memory.Cached
@@ -688,8 +687,6 @@ func computeSummary(firstMetricIndex int, lastMetricIndex int) string {
 	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_memory_buffers_bytes{%s} %d %d\n", defaultLabels, memorySumBuffers/uint64(numberOfMemorySamples), timestamp)
 	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_memory_cached_bytes{%s} %d %d\n", defaultLabels, memorySumCached/uint64(numberOfMemorySamples), timestamp)
 	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_memory_total_bytes{%s} %d %d\n", defaultLabels, metricStore[lastMetricIndex].memory.Total, timestamp)
-
-	fmt.Fprintf(os.Stderr, "Nb : %d / %d\n", numberOfMemorySamples, lastMetricIndex-firstMetricIndex+1)
 
 	// Network counters
 	var networkSumSentTotalBytesStart uint64 = 0
