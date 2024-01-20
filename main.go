@@ -636,6 +636,102 @@ func collectInstantMetrics(msSinceStart int64) {
 	metricStore = append(metricStore, instantMetric)
 }
 
+func computeSummary(firstMetricIndex int, lastMetricIndex int) string {
+	timestamp := metricStore[lastMetricIndex].timestamp
+	totalDuration := metricStore[lastMetricIndex].timestamp - metricStore[firstMetricIndex].timestamp
+	totalDurationSeconds := float64(totalDuration) / 1000.0
+
+	defaultLabels := renderLabels(nil)
+
+	summaryBuffer := "\n# Summary of metrics while command was running\n"
+
+	// CPU usage
+	cpuSumStart := make(map[string]float64)
+	for _, cpuMetric := range metricStore[firstMetricIndex].cpu {
+		for mode, cpuTime := range cpuMetric.CpuTimePerMode {
+			cpuSumStart[mode] += cpuTime
+		}
+	}
+	cpuSumStop := make(map[string]float64)
+	for _, cpuMetric := range metricStore[lastMetricIndex].cpu {
+		for mode, cpuTime := range cpuMetric.CpuTimePerMode {
+			cpuSumStop[mode] += cpuTime
+		}
+	}
+	for mode, cpuTimeStop := range cpuSumStop {
+		cpuMeanTime := (cpuTimeStop - cpuSumStart[mode]) / totalDurationSeconds
+		metricLabels := map[string]string{
+			"mode": mode,
+		}
+		summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_cpu_mean_seconds{%s} %f %d\n", renderLabels(metricLabels), cpuMeanTime, timestamp)
+	}
+
+	numberOfCores := len(metricStore[firstMetricIndex].cpu)
+	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_cpu_cores{%s} %d %d\n", defaultLabels, numberOfCores, timestamp)
+
+	// Memory usage
+	var memorySumUsed uint64 = 0
+	var memorySumFree uint64 = 0
+	var memorySumBuffers uint64 = 0
+	var memorySumCached uint64 = 0
+	var numberOfMemorySamples = 0
+	for i := firstMetricIndex; i <= lastMetricIndex; i++ {
+		memorySumUsed += metricStore[i].memory.Used
+		fmt.Fprintf(os.Stderr, "Nb : %d / %d\n", metricStore[i].memory.Used, memorySumUsed)
+		memorySumFree += metricStore[i].memory.Free
+		memorySumBuffers += metricStore[i].memory.Buffers
+		memorySumCached += metricStore[i].memory.Cached
+		numberOfMemorySamples++
+	}
+	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_memory_used_bytes{%s} %d %d\n", defaultLabels, memorySumUsed/uint64(numberOfMemorySamples), timestamp)
+	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_memory_free_bytes{%s} %d %d\n", defaultLabels, memorySumFree/uint64(numberOfMemorySamples), timestamp)
+	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_memory_buffers_bytes{%s} %d %d\n", defaultLabels, memorySumBuffers/uint64(numberOfMemorySamples), timestamp)
+	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_memory_cached_bytes{%s} %d %d\n", defaultLabels, memorySumCached/uint64(numberOfMemorySamples), timestamp)
+	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_memory_total_bytes{%s} %d %d\n", defaultLabels, metricStore[lastMetricIndex].memory.Total, timestamp)
+
+	fmt.Fprintf(os.Stderr, "Nb : %d / %d\n", numberOfMemorySamples, lastMetricIndex-firstMetricIndex+1)
+
+	// Network counters
+	var networkSumSentTotalBytesStart uint64 = 0
+	var networkSumRecvTotalBytesStart uint64 = 0
+	for _, networkMetric := range metricStore[firstMetricIndex].network {
+		networkSumSentTotalBytesStart += networkMetric.SentTotalBytes
+		networkSumRecvTotalBytesStart += networkMetric.RecvTotalBytes
+	}
+	var networkSumSentTotalBytesStop uint64 = 0
+	var networkSumRecvTotalBytesStop uint64 = 0
+	for _, networkMetric := range metricStore[lastMetricIndex].network {
+		networkSumSentTotalBytesStop += networkMetric.SentTotalBytes
+		networkSumRecvTotalBytesStop += networkMetric.RecvTotalBytes
+	}
+	networkMeanRateSent := float64(networkSumSentTotalBytesStop-networkSumSentTotalBytesStart) / totalDurationSeconds
+	networkMeanRateRecv := float64(networkSumRecvTotalBytesStop-networkSumRecvTotalBytesStart) / totalDurationSeconds
+
+	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_network_mean_sent_bytes_per_second{%s} %f %d\n", defaultLabels, networkMeanRateSent, timestamp)
+	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_network_mean_received_bytes_per_second{%s} %f %d\n", defaultLabels, networkMeanRateRecv, timestamp)
+
+	// Disk monitoring
+	var diskSumReadBytesTotalStart uint64 = 0
+	var diskSumWriteBytesTotalStart uint64 = 0
+	for _, diskMetric := range metricStore[firstMetricIndex].disk {
+		diskSumReadBytesTotalStart += diskMetric.ReadBytesTotal
+		diskSumWriteBytesTotalStart += diskMetric.WriteBytesTotal
+	}
+	var diskSumReadBytesTotalStop uint64 = 0
+	var diskSumWriteBytesTotalStop uint64 = 0
+	for _, diskMetric := range metricStore[lastMetricIndex].disk {
+		diskSumReadBytesTotalStop += diskMetric.ReadBytesTotal
+		diskSumWriteBytesTotalStop += diskMetric.WriteBytesTotal
+	}
+	diskMeanRateRead := float64(diskSumWriteBytesTotalStop-diskSumWriteBytesTotalStart) / totalDurationSeconds
+	diskMeanRateWrite := float64(diskSumReadBytesTotalStop-diskSumReadBytesTotalStart) / totalDurationSeconds
+
+	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_disk_mean_read_bytes_per_second{%s} %f %d\n", defaultLabels, diskMeanRateRead, timestamp)
+	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_disk_mean_write_bytes_per_second{%s} %f %d\n", defaultLabels, diskMeanRateWrite, timestamp)
+
+	return summaryBuffer
+}
+
 func writeResultToFile() error {
 	defaultLabels := renderLabels(nil)
 
@@ -714,9 +810,22 @@ func writeResultToFile() error {
 		os.Exit(1)
 	}
 
+	var firstMetricWhileRunning int = -1
+	var lastMetricWhileRunning int = -1
 	// ====== Write metrics to file ======
-	for _, metric := range metricStore {
+	for index, metric := range metricStore {
 		metricsBuffer := ""
+
+		if metric.cmdStatus == CommandStatusRunning {
+			if firstMetricWhileRunning == -1 {
+				firstMetricWhileRunning = index
+			}
+		}
+		if metric.cmdStatus == CommandStatusDone {
+			if lastMetricWhileRunning == -1 {
+				lastMetricWhileRunning = index
+			}
+		}
 
 		// Command status
 		metricsBuffer += fmt.Sprintf(MetricPrefix+"command_status{%s} %d %d\n", defaultLabels, metric.cmdStatus, metric.timestamp)
@@ -769,6 +878,11 @@ func writeResultToFile() error {
 			fmt.Println("Error writing to metrics file:", err)
 			os.Exit(1)
 		}
+	}
+
+	if _, err := resultFile.WriteString(computeSummary(firstMetricWhileRunning, lastMetricWhileRunning)); err != nil {
+		fmt.Println("Error writing to metrics file:", err)
+		os.Exit(1)
 	}
 
 	return nil
