@@ -389,6 +389,7 @@ func syncStartCommand(cmd *exec.Cmd, syncServerUrl string, syncStop bool) {
 func waitForHttpSyncToStartCommand(cmd *exec.Cmd, waitForStop bool) {
 	// Create mutex
 	var mutex = &sync.Mutex{}
+	var wg sync.WaitGroup
 	var cmdStarted = false
 	var cmdFinished = false
 
@@ -408,12 +409,13 @@ func waitForHttpSyncToStartCommand(cmd *exec.Cmd, waitForStop bool) {
 			w.WriteHeader(http.StatusConflict)
 			fmt.Fprintf(w, "KO")
 		} else {
-
+			wg.Add(1)
 			// Start the command in a goroutine
 			go func() {
 				cmdStarted = true
 				startCommand(cmd)
 				cmdFinished = true
+				wg.Done()
 
 				if !waitForStop {
 					os.Exit(0)
@@ -440,6 +442,8 @@ func waitForHttpSyncToStartCommand(cmd *exec.Cmd, waitForStop bool) {
 				// Create a context with a timeout
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
+
+				wg.Wait()
 
 				// Shutdown the server gracefully
 				if err := server.Shutdown(ctx); err != nil {
