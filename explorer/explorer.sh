@@ -50,9 +50,8 @@ function importPromFile {
                 || { echo "Cannot create grafana annotations from $file" ;  exit 1; }
         done
 
-        startTime=$(cat $file | grep -v "^#" | head -n 1 | sed 's/.*\} .* //')
-        endTime=$(cat $file | grep -v "^#" | tail -n 1 | sed 's/.*\} .* //')
-        echo "Start time: $startTime ; End time: $endTime"
+        startTime=$(grep "^statexec_metric_collect_duration_ms" $file | sed -e 's/.*\} .* //' | head -n 1)
+        endTime=$(grep "^statexec_metric_collect_duration_ms" $file | sed -e 's/.*\} .* //' | tail -n 1)
         echo -e "${startTime}\n${endTime}" >> $tmpfile
     done
 
