@@ -150,7 +150,7 @@ statexec --connect localhost -- iperf3 -c 127.0.0.1
 
 # OR
 
-statexec -mst 1704067200000  -l benchmark=sample -dbc 2 -dac 5 -f client.prom -c localhost -- iperf3 -s
+statexec -mst 1704067200000  -l benchmark=sample -dbc 2 -dac 5 -f client.prom -c localhost -- iperf3 -c 127.0.0.1
 ```
 
 - `SE_DELAY_BEFORE_COMMAND`: Introduces a delay of 2 seconds while collecting metrics before starting the client, ensuring the server is ready to accept connections.
@@ -178,6 +178,10 @@ Once you've run statexec, the metrics gathered during your command's execution a
 This initiates a visualization stack comprising Victoria Metrics VMSingle and Grafana. This setup includes a preprovisioned datasource and dashboard, tailored for an insightful exploration of your command's performance metrics. With this, you can delve into detailed system metrics captured during the runtime, gaining valuable insights into performance and operational dynamics.
 
 To illustrate the process without needing to first execute statexec, the explorer/import folder contains three sample files by default. These samples demonstrate the type of data statexec captures and how it's visualized in the stack. This is an excellent way to familiarize yourself with the system's capabilities and the types of insights you can glean from your metrics before running your own commands.
+
+Here is a screenshot of the dashboard with some sample data extracted from a real statexec output: 
+
+![Dashboard screenshot](explorer/dashboard-screenshot.png "Dashboard screenshot")
 
 ## Exporting and Importing Metrics
 

@@ -36,7 +36,10 @@ function importPromFile {
 
     tmpfile=$(mktemp)
     find $import -type f -name "*.prom" -print0 | while IFS= read -r -d '' file; do
-        echo "Importing $file"
+        
+        # Find instance name
+        instance=$(grep -Eo 'instance="[^"]+"' $file | head -n 1 | awk -F'"' '{print $2}'  )
+        role=$(grep -Eo 'role="[^"]+"' $file | head -n 1 | awk -F'"' '{print $2}'  )
 
         # Prometheus metrics
         curl -X POST ${VMSERVER}/api/v1/import/prometheus -T "$file" \
@@ -52,6 +55,7 @@ function importPromFile {
 
         startTime=$(grep "^statexec_metric_collect_duration_ms" $file | sed -e 's/.*\} .* //' | head -n 1)
         endTime=$(grep "^statexec_metric_collect_duration_ms" $file | sed -e 's/.*\} .* //' | tail -n 1)
+        echo "View stats for $file : ${DASHBOARDURL}?orgId=1&from=${startTime}&to=${endTime}&var-instance=${instance}&var-role=${role}"
         echo -e "${startTime}\n${endTime}" >> $tmpfile
     done
 

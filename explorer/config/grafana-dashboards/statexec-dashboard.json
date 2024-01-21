@@ -60,6 +60,293 @@
   "liveNow": false,
   "panels": [
     {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 7,
+      "panels": [],
+      "repeat": "instance",
+      "repeatDirection": "h",
+      "title": "Summary for \"$instance\"",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P4169E866C3094E38"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "fieldMinMax": false,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "binBps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "cpuavg"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "core"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "cpucores"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "core"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "text",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "memused"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "purple",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "memtotal"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "text",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/Disk .*/"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "id": 1,
+      "interval": "1s",
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "10.2.3",
+      "repeat": "role",
+      "repeatDirection": "v",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_VICTORIAMETRICS}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "sum(statexec_summary_cpu_mean_seconds{instance=~\"$instance\",role=~\"$role\",mode=~\"user|system\"}) by (mode)",
+          "hide": false,
+          "instant": true,
+          "legendFormat": "CPU {{mode}}",
+          "range": false,
+          "refId": "cpuavg"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_VICTORIAMETRICS}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "statexec_summary_cpu_cores{instance=~\"$instance\",role=~\"$role\"}",
+          "hide": false,
+          "instant": true,
+          "legendFormat": "CPU total",
+          "range": false,
+          "refId": "cpucores"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_VICTORIAMETRICS}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "statexec_summary_memory_used_bytes{instance=~\"$instance\",role=~\"$role\"}",
+          "hide": false,
+          "instant": true,
+          "legendFormat": "MEM Used",
+          "range": false,
+          "refId": "memused"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_VICTORIAMETRICS}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "statexec_summary_memory_total_bytes{instance=~\"$instance\",role=~\"$role\"}",
+          "hide": false,
+          "instant": true,
+          "legendFormat": "MEM Total",
+          "range": false,
+          "refId": "memtotal"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_VICTORIAMETRICS}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "statexec_summary_network_mean_received_bytes_per_second{instance=~\"$instance\",role=~\"$role\"}",
+          "hide": false,
+          "instant": true,
+          "legendFormat": "NET Recv",
+          "range": false,
+          "refId": "netrecv"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_VICTORIAMETRICS}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "statexec_summary_network_mean_sent_bytes_per_second{instance=~\"$instance\",role=~\"$role\"}",
+          "hide": false,
+          "instant": true,
+          "legendFormat": "NET Sent",
+          "range": false,
+          "refId": "netsent"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_VICTORIAMETRICS}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "statexec_summary_disk_mean_read_bytes_per_second{instance=~\"$instance\",role=~\"$role\"}",
+          "hide": false,
+          "instant": true,
+          "legendFormat": "Disk Read",
+          "range": false,
+          "refId": "diskread"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_VICTORIAMETRICS}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "statexec_summary_disk_mean_write_bytes_per_second{instance=~\"$instance\",role=~\"$role\"}",
+          "hide": false,
+          "instant": true,
+          "legendFormat": "Disk Write",
+          "range": false,
+          "refId": "diskwrite"
+        }
+      ],
+      "title": "Average metrics for \"$instance\" ($role)",
+      "type": "stat"
+    },
+    {
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "id": 6,
+      "title": "Details",
+      "type": "row"
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "P4169E866C3094E38"
@@ -147,9 +434,9 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 16
       },
-      "id": 1,
+      "id": 5,
       "interval": "1s",
       "options": {
         "legend": {
@@ -263,7 +550,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 8
+        "y": 24
       },
       "id": 4,
       "interval": "1s",
@@ -418,7 +705,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 16
+        "y": 32
       },
       "id": 3,
       "interval": "1s",
@@ -546,7 +833,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 24
+        "y": 40
       },
       "id": 2,
       "interval": "1s",
@@ -613,6 +900,10 @@
             "$__all"
           ]
         },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "P4169E866C3094E38"
+        },
         "definition": "label_values(statexec_command_status,instance)",
         "hide": 0,
         "includeAll": true,
@@ -623,6 +914,38 @@
         "query": {
           "qryType": 1,
           "query": "label_values(statexec_command_status,instance)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "standalone"
+          ],
+          "value": [
+            "standalone"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "P4169E866C3094E38"
+        },
+        "definition": "label_values(statexec_command_status{instance=~\"$instance\"},role)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Role",
+        "multi": true,
+        "name": "role",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(statexec_command_status{instance=~\"$instance\"},role)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
@@ -646,8 +969,8 @@
     ]
   },
   "time": {
-    "from": "2024-01-01T00:00:00.000Z",
-    "to": "2024-01-01T00:02:18.000Z"
+    "from": "now-1h",
+    "to": "now"
   },
   "timepicker": {
     "hidden": false,
