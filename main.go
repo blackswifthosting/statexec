@@ -722,8 +722,8 @@ func computeSummary(firstMetricIndex int, lastMetricIndex int) string {
 		diskSumReadBytesTotalStop += diskMetric.ReadBytesTotal
 		diskSumWriteBytesTotalStop += diskMetric.WriteBytesTotal
 	}
-	diskMeanRateRead := float64(diskSumWriteBytesTotalStop-diskSumWriteBytesTotalStart) / totalDurationSeconds
-	diskMeanRateWrite := float64(diskSumReadBytesTotalStop-diskSumReadBytesTotalStart) / totalDurationSeconds
+	diskMeanRateRead := float64(diskSumReadBytesTotalStop-diskSumReadBytesTotalStart) / totalDurationSeconds
+	diskMeanRateWrite := float64(diskSumWriteBytesTotalStop-diskSumWriteBytesTotalStart) / totalDurationSeconds
 
 	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_disk_mean_read_bytes_per_second{%s} %f %d\n", defaultLabels, diskMeanRateRead, timestamp)
 	summaryBuffer += fmt.Sprintf(MetricPrefix+"summary_disk_mean_write_bytes_per_second{%s} %f %d\n", defaultLabels, diskMeanRateWrite, timestamp)
