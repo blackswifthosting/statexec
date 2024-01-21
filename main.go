@@ -520,9 +520,10 @@ func startCommand(cmd *exec.Cmd) {
 	collectInstantMetrics(commandStartedAtTime)
 
 	// Annotate the command start
+	currentTimestamp := metricsStartTime + commandStartedAtTime
 	annotationStore = append(annotationStore, GrafanaAnnotation{
-		Time:    commandStartedAtTime,
-		TimeEnd: commandStartedAtTime,
+		Time:    currentTimestamp,
+		TimeEnd: currentTimestamp,
 		Text:    "Command started",
 		Tags: []string{
 			"statexec",
@@ -541,9 +542,10 @@ func startCommand(cmd *exec.Cmd) {
 	collectInstantMetrics(commandFinishedAtTime)
 
 	// Annotate the command end
+	currentTimestamp = metricsStartTime + commandFinishedAtTime
 	annotationStore = append(annotationStore, GrafanaAnnotation{
-		Time:    commandFinishedAtTime,
-		TimeEnd: commandFinishedAtTime,
+		Time:    currentTimestamp,
+		TimeEnd: currentTimestamp,
 		Text:    "Command done with status " + strconv.Itoa(cmd.ProcessState.ExitCode()),
 		Tags: []string{
 			"statexec",
